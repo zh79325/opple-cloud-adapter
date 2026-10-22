@@ -46,6 +46,16 @@
   color: #6b7280;
 }
 
+.editToggle {
+  border: 1px solid #8b5cf6;
+  color: #6d28d9;
+  background: #f5f3ff;
+  border-radius: 10px;
+  padding: 8px 16px;
+  font-size: 15px;
+  cursor: pointer;
+}
+
 .refresh {
   margin-left: auto;
   border: none;
@@ -55,7 +65,7 @@
   cursor: pointer;
 }
 
-.rooms { display: flex; flex-direction: column; gap: 18px; }
+.rooms { display: flex; flex-direction: column; gap: 20px; }
 
 .room {
   background: #fff;
@@ -64,9 +74,16 @@
   border: 1px solid #eceef2;
 }
 
-.room h2 {
+.roomHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.roomHeader h2 {
   font-size: 16px;
-  margin: 0 0 12px;
+  margin: 0;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -81,33 +98,101 @@
   border-radius: 8px;
 }
 
-.devices {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
-  gap: 10px;
+.saveBtn {
+  border: none;
+  background: #8b5cf6;
+  color: #fff;
+  border-radius: 8px;
+  padding: 6px 16px;
+  font-size: 13px;
+  cursor: pointer;
 }
 
-.device {
+.saveBtnDone {
   border: 1px solid #e3e6eb;
+  background: #f8fafc;
+  color: #94a3b8;
+  border-radius: 8px;
+  padding: 6px 16px;
+  font-size: 13px;
+}
+
+/* 房间平面图 */
+.map {
+  position: relative;
+  height: 260px;
+  border: 2px solid #d0d5dd;
   border-radius: 10px;
-  background: #fafbfc;
-  padding: 12px;
+  background:
+    linear-gradient(#f1f5f9 1px, transparent 1px),
+    linear-gradient(90deg, #f1f5f9 1px, transparent 1px);
+  background-size: 10% 10%;
+  touch-action: none;
+  overflow: hidden;
+}
+
+.mapEdit {
+  border-color: #8b5cf6;
+  border-style: dashed;
+}
+
+.mapHint {
+  position: absolute;
+  bottom: 6px;
+  right: 10px;
+  font-size: 11px;
+  color: #a78bfa;
+  pointer-events: none;
+}
+
+.pin {
+  position: absolute;
+  transform: translate(-50%, -50%);
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  font-size: 14px;
+  align-items: center;
+  gap: 2px;
+  user-select: none;
+  z-index: 2;
 }
 
-.deviceOffline { opacity: 0.55; }
+.pinDrag {
+  cursor: grab;
+}
 
-.dot { color: #22c55e; font-size: 12px; }
-.deviceOffline .dot { color: #9ca3af; }
+.pinDrag:active {
+  cursor: grabbing;
+}
 
-.deviceName { font-weight: 600; }
+.pinOffline {
+  opacity: 0.5;
+}
 
-.deviceType {
+.pinIcon {
+  font-size: 22px;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.2));
+}
+
+.pinLabel {
   font-size: 12px;
-  color: #8a919f;
+  background: rgba(255, 255, 255, 0.92);
+  border: 1px solid #e3e6eb;
+  border-radius: 6px;
+  padding: 2px 8px;
+  white-space: nowrap;
+  color: #1f2329;
+}
+
+.pinOffline .pinLabel { color: #9ca3af; }
+
+.tip {
+  background: #f5f3ff;
+  border: 1px solid #ddd6fe;
+  color: #5b21b6;
+  border-radius: 10px;
+  padding: 10px 14px;
+  font-size: 13px;
+  margin-bottom: 16px;
 }
 
 .error {

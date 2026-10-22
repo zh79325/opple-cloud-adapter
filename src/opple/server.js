@@ -1,7 +1,7 @@
 // opple Web 站点后端：零依赖 Node 服务，复用 OppleClient
 // 提供 REST API + 托管 ice 前端构建产物（web/build）
 import { createServer } from 'node:http';
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { join, extname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { OppleClient } from './client.js';
@@ -9,6 +9,32 @@ import { OppleClient } from './client.js';
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const PORT = Number(process.env.PORT ?? 5170);
 const WEB_DIST = join(__dirname, '../../web/build');
+// 设备位置存储：projectCode -> gpno -> vDeviceId -> { x, y, name }
+// 坐标为房间平面图上的相对位置（0-100 百分比）
+const POS_FILE = join(__dirname, '../../data/device-positions.json');
+
+function loadPositions() {
+  try { return JSON.parse(readFileSync(POS_FILE, 'utf8')); } catch { return {}; }
+}
+
+function savePositions(data) {
+  writeFileSync(POS_FILE, JSON.stringify(data, null, 2));
+}
+
+/** 给 tree 结果注入设备位置（position 不存在时为 null，前端用默认布局） */
+function treeWithPositions(tree) {
+  const pos = loadPositions();
+  for (const home of tree) {
+    const homePos = pos[home.projectCode] ?? {};
+    for (const room of home.rooms) {
+      const roomPos = homePos[String(room.gpno)] ?? {};
+      for (const d of room.devices) {
+        d.position = roomPos[d.vDeviceId] ?? null;
+      }
+    }
+  }
+  return tree;
+}
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -28,6 +54,14 @@ function json(res, code, data) {
   res.end(body);
 }
 
+async function readBody(req) {
+  const chunks = [];
+  for await (const c of req) chunks.push(c);
+  if (!chunks.length) return {};
+  try { return JSON.parse(Buffer.concat(chunks).toString('utf8')); }
+  catch { return {}; }
+}
+
 const server = createServer(async (req, res) => {
   const url = new URL(req.url, `http://localhost:${PORT}`);
   const path = url.pathname;
@@ -40,28 +74,55 @@ const server = createServer(async (req, res) => {
 
   // ---- API 路由 ----
   if (path.startsWith('/api/')) {
-    let client;
-    try { client = OppleClient.loadConfig(); }
-    catch (e) { return json(res, 500, { error: e.message }); }
-
     try {
       if (req.method === 'GET' && path === '/api/homes') {
+        let client;
+        try { client = OppleClient.loadConfig(); } catch (e) { return json(res, 500, { error: e.message }); }
         return json(res, 200, await client.homeList());
       }
       if (req.method === 'GET' && path === '/api/tree') {
-        return json(res, 200, await client.tree());
+        let client;
+        try { client = OppleClient.loadConfig(); } catch (e) { return json(res, 500, { error: e.message }); }
+        const tree = await client.tree();
+        return json(res, 200, treeWithPositions(tree));
       }
       if (req.method === 'GET' && path === '/api/devices') {
+        let client;
+        try { client = OppleClient.loadConfig(); } catch (e) { return json(res, 500, { error: e.message }); }
         const gpNo = url.searchParams.get('gpNo');
         return json(res, 200, gpNo ? await client.roomDevices(gpNo) : await client.listDevices());
       }
       if (req.method === 'GET' && path === '/api/summary') {
+        let client;
+        try { client = OppleClient.loadConfig(); } catch (e) { return json(res, 500, { error: e.message }); }
         return json(res, 200, await client.deviceSummary());
       }
       if (req.method === 'GET' && path === '/api/actions') {
+        let client;
+        try { client = OppleClient.loadConfig(); } catch (e) { return json(res, 500, { error: e.message }); }
         const vid = url.searchParams.get('vDeviceId');
         if (!vid) return json(res, 400, { error: 'vDeviceId required' });
         return json(res, 200, await client.actionAbility(vid));
+      }
+      // 保存房间内设备位置（拖拽后调用）
+      // body: { projectCode, gpno, positions: { vDeviceId: { x, y, name } } }
+      if (req.method === 'POST' && path === '/api/positions') {
+        const { projectCode, gpno, positions } = await readBody(req);
+        if (!projectCode || !gpno || typeof positions !== 'object') {
+          return json(res, 400, { error: 'projectCode, gpno, positions required' });
+        }
+        const all = loadPositions();
+        all[projectCode] ??= {};
+        all[projectCode][String(gpno)] = positions;
+        savePositions(all);
+        return json(res, 200, { ok: true, saved: Object.keys(positions).length });
+      }
+      // 导出某家庭的结构化位置数据（供 AI 理解设备空间关系）
+      if (req.method === 'GET' && path === '/api/positions') {
+        const pc = url.searchParams.get('projectCode');
+        const all = loadPositions();
+        if (pc) return json(res, 200, all[pc] ?? {});
+        return json(res, 200, all);
       }
       return json(res, 404, { error: 'not found' });
     } catch (e) {
