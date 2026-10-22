@@ -1,7 +1,7 @@
 *.apk
 *.har
-data/decompiled.js
-data/extracted/
+data/*
+!data/api_paths.txt
 node_modules/
 __pycache__/
 web/build/

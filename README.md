@@ -13,6 +13,7 @@
 | Web 前端 | `web/`（ice.js v3） | 家庭/房间/设备 + 位置编辑 + 3D 预览 |
 | 逆向产物 | `data/` | APK、反编译 JS、552 个接口清单、抓包样本 |
 | 空间数据 | `data/device-positions.json` | 房间尺寸 + 设备 3D 几何位置 |
+| 数据快照 | `data/local-tree.json` | 家庭/房间/设备本地快照（"同步数据"写入） |
 
 ## 快速开始
 
@@ -31,8 +32,10 @@ opple raw GET /api/Project/GetHomeList        # 调试任意接口
 # Web 控制台
 node src/opple/server.js                       # 或 npm run web
 # 打开 http://localhost:5170
-# ✎ 平面编辑：拖拽设备（灯=圆盘可调大小、灯带=长条可调长度方向）+ 高度滑条
-# 👁 3D 预览：透视房间盒，灯盘按离地高度悬吊、灯带发光长条
+# ⛅ 同步数据：一键拉取欧享家云端最新家庭/房间/设备到本地快照（data/local-tree.json）
+#      之后页面数据全部读本地快照，不再每次请求云端；位置编辑仍实时保存
+# ➜ 家庭页：房间卡片列表，点击进入房间 3D 预览（拖拽旋转 / 滚轮缩放）
+# ✎ 编辑布局：二维平面拖拽设备（灯=圆盘可调大小、灯带=长条可调方向长度）+ 尺寸/高度滑杆
 ```
 
 ## Token 获取
@@ -58,20 +61,24 @@ Reqable 抓包（手机连电脑代理 + 信任证书），从任意 `iot2.opple
 
 | 接口 | 说明 |
 |---|---|
-| `GET /api/tree` | 三层结构 + 房间 shape + 设备 position |
-| `POST /api/positions` | 保存房间尺寸与设备 3D 几何 |
+| `GET /api/tree` | 三层结构 + 房间 shape + 设备 position；本地快照优先（`source: local`），无快照时回源云端并落盘 |
+| `POST /api/sync` | 一键同步：拉取欧享家云端最新结构写入本地快照，返回最新树 |
+| `POST /api/positions` | 保存房间布局：`shape`/`positions`/`excluded` 均可选，只传哪个更新哪个（实时写盘，不经快照） |
 | `GET /api/positions?projectCode=` | 导出空间数据（供 AI 空间推理） |
 | `GET /api/actions?vDeviceId=` | 设备动作能力 |
-| `GET /api/summary` `/api/homes` `/api/devices` | 设备摘要/家庭/设备列表 |
+| `GET /api/summary` `/api/homes` `/api/devices` | 设备摘要/家庭/设备列表（实时请求云端） |
 
 ## 空间模型（供 AI 组合控制）
 
 ```js
 房间:  { w: 100, h: 45, depth: 100 }                // 宽/高/深（5m×2.3m×5m）
-吸顶灯: { kind: 'circle', x, y, r, elev }            // 圆心+半径+离地高度
-灯带:  { kind: 'segment', x1, y1, x2, y2, elev }    // 端点线段+安装高度
+吸顶灯: { kind: 'circle', x, y, r, elev }            // 圆心+半径+离地高度百分比
+灯带:  { kind: 'segment', x1, y1, x2, y2, elev }    // 端点线段+安装高度百分比
 网关:  { kind: 'point', x, y, elev }
 ```
+
+- `elev` 存储为**离地百分比**（0=地面，100=天花）；控制台 UI 统一以「距顶」米数呈现（距顶 = (100-elev)×0.05m），符合吸顶灯贴顶的直觉。
+- 网关等点位设备与**手动排除**的设备（控制台设备清单中眼睛图标切换，存入房间的 `excluded` 列表）不参与位置编辑、3D 渲染与 `/api/positions` 导出。
 
 `GET /api/positions` 输出的几何带形态语义：AI 可据此推理"电视墙氛围光 = 右墙 segment 灯带低亮度暖色 + 关闭中央 circle 主灯"这类组合控制。
 
@@ -81,6 +88,8 @@ Reqable 抓包（手机连电脑代理 + 信任证书），从任意 `iot2.opple
 - ✅ 三层模型（GetHomeList → FindUserRoomList → FindDeviceAndGroupListV2）
 - ✅ 调光/调色温/调颜色 CallAction（4 条抓包样本 + CXCY 编码与官方枚举比对吻合）
 - ✅ 位置编辑/3D 渲染端到端（拖拽→保存→刷新还原）
+- ✅ 排除/恢复端到端（清单切换→3D/编辑器/导出同步生效，位置数据保留）
+- ✅ 本地快照同步（POST /api/sync 落盘 → GET /api/tree 本地毫秒级响应，位置数据实时合并）
 - ⏳ 灯效（0x14 系列）组包顺序：能力表推断，待真机下发验证
 - ⏳ 登录接口请求体（验证码/一键登录）
 

@@ -3,10 +3,36 @@
  * ice.js will globally import this file by default.
  */
 :root {
-  --primary: #3178f6;
-  --bg-primary: white;
+  color-scheme: dark;
+  --bg: #070b16;
+  --line: rgba(148, 163, 184, 0.16);
+  --text-1: #e7ecf6;
+  --text-2: #aab3c8;
+  --text-3: #6b7590;
+  --accent: #818cf8;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
 }
 
 body {
-  margin: 0;
+  background: var(--bg);
+  background-image:
+    radial-gradient(1100px 520px at 85% -10%, rgba(99, 102, 241, 0.16), transparent 60%),
+    radial-gradient(900px 480px at -10% 108%, rgba(139, 92, 246, 0.12), transparent 55%);
+  background-attachment: fixed;
+  color: var(--text-1);
+  font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Segoe UI', 'Microsoft YaHei', sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+::selection {
+  background: rgba(129, 140, 248, 0.35);
 }
