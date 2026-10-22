@@ -12,13 +12,16 @@ const HELP = `opple — 欧享家（欧普 INNO）本地终端控制
   tree                               家庭 → 房间 → 设备 三层结构树
   devices [房间名|Gpno]              设备列表（可按房间过滤）
   actions <vDeviceId>                查询某设备全部可调用动作（含参数范围）
+  status <vDeviceId>                 读设备实存状态（灯效参数/亮度等，与 App 显示同源，含更新时间）
   light <id> <op> <值>               灯光控制
     op: on / off / bright(1-255或%) / cct(1800-12000K) / duv(-8~8)
         color(预设名|#RGB|cx,cy) / daylight(晨曦|旭日|沐阳|夕照|明月|静夜)
-  scene <id> <效果> [k=v…]           灯效控制（跃动模式，灯带类设备）
-    效果: 流水/跑马/呼吸/律动/静态色温渐变/动态色温渐变/静态颜色渐变
-    参数: color= speed=(1-100) direction=(forward|reverse) loop=(0|1)
-          cctFrom= cctTo= duration=(1-10)
+  scene <id> <效果> [key=value…]      灯效控制（悦动模式，灯带类设备）
+    效果: 流水/跑马/呼吸/律动/静态色温渐变/动态色温渐变
+    无参数 = 总开关切换，颜色/速度沿用设备当前设置
+    colors=色1,色2 speed=1-100 direction=0|1 loop=0|1 → 专属命令字全参下发
+    colors 每项: 预设名 / #RRGGBB / 8位CXCYhex（自动补零 6 组防吞参）
+    速度换算: 1~20 同最慢档; 60 档≈1.03m/s, 100 档≈2.07m/s（按 9.69m 带标定）
   call <id> <msgType> <v1,v2,…>      底层命令调用（actions 查到的任意 msgType）
   raw <METHOD> <path> [jsonQuery]    直接调用任意接口（调试用）
 
@@ -60,15 +63,27 @@ const COLORS = {
 // 日光模式预设（高16位=色温K，来源：FindDeviceAbility 0x046F 枚举）
 const DAYLIGHT = { 晨曦: 196672844, 旭日: 262209228, 沐阳: 327745279, 夕照: 177011814, 明月: 655424537, 静夜: 118029324 };
 
-// 悦动灯效（0x14 系列，仅灯带类设备支持；参数序=回路,悦动模式,颜色,速度,方向[,渐变时长]）
+// 悦动灯效（灯带类设备）。无参数时走 0x14010000 悦动总开关 [回路,模式]，沿用设备当前颜色/速度；
+// 带 colors/speed/direction 参数时走各效果专属命令字，values 顺序=能力表 KeyId 升序：
+//   流水 0x14030000: [回路,模式,颜色HexString,速度U8,循环U8,方向U8]
+//   跑马 0x14050000: [回路,模式,颜色HexString,速度U8,方向U8]
+//   呼吸 0x14070000: [回路,模式,颜色HexString,速度U8]
+//   律动 0x14090000: [回路,模式,颜色HexString,速度U8]
+// 颜色 HexString 是变长字段，固件把其后全部字节吞进 24 字节(6组CXCY)颜色缓冲区，
+// 必须补零到 48 个 hex 字符，否则速度/方向字节被当作颜色坐标（速度值会渲染成白块）。
+// 速度 1-100：1~20 同为最慢档；20→100 循环周期线性 T(s)=16.40-0.117s 秒（9.69m 带），
+// 流速 v=9.69/T，即 60 档≈1.03 m/s、100 档≈2.07 m/s。
+// 各灯效参数在设备上有独立存储槽位（opple status <id> 可读）：流水 0x1E09-0C、
+// 跑马 0x1E0D-0F、呼吸 0x1E10-11、律动 0x1E12-13（颜色/速度[/循环/方向]）。
+// 渲染语义（速度均为「周期与档位线性」）：跑马=色块流动，T(s)=16.40-0.117s 秒/圈；
+// 律动=全带颜色交替闪烁，交替间隔 T(s)=5.24-0.051s 秒（100 档≈0.14s≈7Hz 频闪）。
 const SCENE = {
-  流水: { msg: '0x14030000', mode: 0, extra: ['循环'] },        // 循环0/1
-  跑马: { msg: '0x14050000', mode: 1 },                          // 颜色,速度,方向
-  呼吸: { msg: '0x14070000', mode: 2 },                          // 颜色,速度
-  律动: { msg: '0x14090000', mode: 3 },                          // 颜色,速度
-  静态色温渐变: { msg: '0x140B0000', mode: 4 },                  // 起始色温,结束色温,方向
-  动态色温渐变: { msg: '0x140D0000', mode: 5 },                  // 起始色温,结束色温,渐变时长(1-10)
-  静态颜色渐变: { msg: '0x140F0000', mode: 6 },                  // 颜色,方向
+  流水: { mode: 0, full: '0x14030000', extra: ['loop', 'direction'], defSpeed: 35 },
+  跑马: { mode: 1, full: '0x14050000', extra: ['direction'], defSpeed: 24 },
+  呼吸: { mode: 2, full: '0x14070000', extra: [], defSpeed: 35 },
+  律动: { mode: 3, full: '0x14090000', extra: [], defSpeed: 40 },
+  静态色温渐变: { mode: 4, full: '0x140B0000' },
+  动态色温渐变: { mode: 5, full: '0x140D0000' },
 };
 
 /** xy 色坐标（0-1）→ CXCY 打包值（高16位 cx*10000，低16位 cy*10000） */
@@ -186,6 +201,34 @@ export async function run(argv) {
     return;
   }
 
+  if (cmd === 'status') {
+    // opple status <vDeviceId>  读设备实存状态（与 App 显示同源，写后读回断言用）
+    const vDeviceId = rest[0];
+    if (!vDeviceId) throw new Error('用法: opple status <vDeviceId>');
+    const c = getClient();
+    const { device, status } = await c.deviceStatus(vDeviceId);
+    console.log(`设备: ${device.DeviceName ?? ''}  vDeviceId=${vDeviceId}  deviceId=${device.DeviceId}  mac=${device.Mac ?? ''}\n`);
+    // 颜色类状态（HexString，每组 8 位 = CXCY 打包：高16位 cx*10000 / 低16位 cy*10000）
+    // 注：0x1A04 颜色模板是模板 ID 非 CXCY，不解析
+    const COLOR_TYPES = ['0x1E09', '0x1E0D', '0x1E10', '0x1E12', '0x1E1A'];
+    const rows = [];
+    for (const s of status) {
+      let val = String(s.Value);
+      if (COLOR_TYPES.includes(s.StatusType)) {
+        const groups = (val.match(/.{8}/g) ?? []).map(g => {
+          const cx = parseInt(g.slice(0, 4), 16) / 10000, cy = parseInt(g.slice(4), 16) / 10000;
+          return `(${cx.toFixed(3)},${cy.toFixed(3)})`;
+        });
+        if (groups.length) val = `${groups.length}色 ${groups.join(' ')}`;
+      } else if (s.StatusType === '0x0300') {
+        val = `${val} (${Math.round((Number(val) / 255) * 100)}%)`;
+      }
+      rows.push([s.StatusType, s.Name, val, new Date(s.TimeStamp).toLocaleTimeString()]);
+    }
+    printTable(rows, ['状态码', '名称', '值', '更新时间']);
+    return;
+  }
+
   if (cmd === 'light') {
     // opple light <vDeviceId> <op> <value...>
     // op: on/off/bright/cct/duv/color/daylight
@@ -236,41 +279,44 @@ export async function run(argv) {
   }
 
   if (cmd === 'scene') {
-    // opple scene <vDeviceId> <效果> [options]
-    // 例: opple scene 2122018 跑马 speed=60 direction=forward color=晚霞
-    const [vDeviceId, effectName, ...optPairs] = rest;
+    // opple scene <vDeviceId> <效果> [key=value…]
+    // 例: opple scene 2122018 跑马
+    //     opple scene 2122018 跑马 colors=红,蓝 speed=60 direction=1
+    const [vDeviceId, effectName, ...opts] = rest;
     if (!vDeviceId || !effectName) {
-      console.log('用法: opple scene <vDeviceId> <效果> [key=value …]');
-      console.log('效果: ' + Object.keys(SCENE).join(' / '));
-      console.log('参数: color=<预设|#RGB|cx,cy> speed=<1-100> direction=<forward|reverse>');
-      console.log('      cctFrom=<K> cctTo=<K> duration=<1-10> loop=<0|1>');
+console.log('用法: opple scene <vDeviceId> <效果> [colors=色1,色2 speed=1-100 direction=0|1 loop=0|1]');
+console.log('效果: ' + Object.keys(SCENE).join(' / ') + '（colors 每项: 预设名/#RRGGBB/8位CXCYhex）');
       return;
     }
     const sc = SCENE[effectName];
     if (!sc) throw new Error(`未知效果: ${effectName}，支持: ${Object.keys(SCENE).join('/')}`);
-    const opts = {};
-    for (const p of optPairs) {
-      const [k, v] = p.split('=');
-      if (k) opts[k] = v;
+    const opt = {};
+    for (const o of opts) {
+      const i = o.indexOf('=');
+      if (i <= 0) throw new Error(`参数需为 key=value 形式: ${o}`);
+      opt[o.slice(0, i)] = o.slice(i + 1);
     }
-    const color = opts.color ? resolveColor(opts.color) : COLORS.星云;
-    const speed = Number(opts.speed ?? 50);
-    const direction = opts.direction === 'reverse' ? 1 : 0;
-    const loop = opts.loop === '0' ? 0 : 1;
-    let values;
-    switch (effectName) {
-      case '流水':   values = [0, sc.mode, color, speed, loop]; break;             // 回路,模式,颜色,速度,循环
-      case '跑马':   values = [0, sc.mode, color, speed, direction]; break;        // 回路,模式,颜色,速度,方向
-      case '呼吸':   values = [0, sc.mode, color, speed]; break;
-      case '律动':   values = [0, sc.mode, color, speed]; break;
-      case '静态色温渐变': values = [0, sc.mode, Number(opts.cctFrom ?? 3000), Number(opts.cctTo ?? 6000), direction]; break;
-      case '动态色温渐变': values = [0, sc.mode, Number(opts.cctFrom ?? 3000), Number(opts.cctTo ?? 6000), Number(opts.duration ?? 5)]; break;
-      case '静态颜色渐变': values = [0, sc.mode, color, direction]; break;
-      default: throw new Error('内部错误');
+    let msg = '0x14010000'; // 悦动总开关：只切模式，颜色/速度沿用设备当前值
+    let values = [0, sc.mode];
+    if (sc.full && (opt.colors || opt.speed || opt.direction || opt.loop)) {
+      // 完整参数模式：走专属命令字，全参下发（values 数量必须=能力表 KeyId 个数）
+      msg = sc.full;
+      let colorHex = '10EE1123081C055A09B408840B4C0BAE0C96076A0EBA0E38'; // 能力表默认 6 色彩虹
+      if (opt.colors) {
+        colorHex = opt.colors.split(',').map(t => {
+          if (/^[0-9a-fA-F]{8}$/.test(t)) return t.toUpperCase(); // 已是 CXCY 打包 hex
+          return ((resolveColor(t) >>> 0).toString(16)).padStart(8, '0').toUpperCase();
+        }).join('');
+      }
+      colorHex = colorHex.padEnd(48, '0').slice(0, 48); // 必须满 6 组（24 字节），防吞参
+      const speed = Math.min(100, Math.max(1, Number(opt.speed) || sc.defSpeed));
+      values = [0, sc.mode, colorHex, speed];
+      if (sc.extra.includes('loop')) values.push(opt.loop === undefined ? 1 : Number(opt.loop));
+      if (sc.extra.includes('direction')) values.push(opt.direction === undefined ? 0 : Number(opt.direction));
     }
     const c = getClient();
-    await c.callAction(vDeviceId, sc.msg, values);
-    console.log(`✅ 灯效 ${effectName} -> 设备 ${vDeviceId} (${values.join(',')})`);
+    await c.callAction(vDeviceId, msg, values);
+    console.log(`✅ 灯效 ${effectName} -> 设备 ${vDeviceId} (${msg} ${values.join(',')})`);
     return;
   }
 

@@ -151,6 +151,23 @@ export class OppleClient {
     });
   }
 
+  /** 查设备真实身份（vDeviceId → DeviceId/Mac/名称；BLE SigMesh 虚拟设备的状态接口只认真实 DeviceId） */
+  async findDevice(vDeviceId, channelId = 65535) {
+    return this.get('/api/Device/FindDevice', { vDeviceId, channelId });
+  }
+
+  /**
+   * 读设备实存状态（GetDeviceStatus 与 App 显示同源，各项含 TimeStamp，可用于写后断言）。
+   * 自动经 FindDevice 换算真实 DeviceId（GetDeviceStatus 传 vDeviceId 报 15021 设备不存在）。
+   * 返回 { device, status }；status 的 Result 是二次 JSON 字符串，此处已解析为数组。
+   */
+  async deviceStatus(vDeviceId) {
+    const device = await this.findDevice(vDeviceId);
+    const raw = await this.get('/api/Device/GetDeviceStatus', { deviceId: device.DeviceId });
+    const status = typeof raw === 'string' ? JSON.parse(raw) : (raw ?? []);
+    return { device, status };
+  }
+
   /** 家庭列表 */
   async homeList() {
     const r = await this.get('/api/Project/GetHomeList', { inviteStatus: '0,1,3', pageIndex: 1, pageSize: 8888 });
