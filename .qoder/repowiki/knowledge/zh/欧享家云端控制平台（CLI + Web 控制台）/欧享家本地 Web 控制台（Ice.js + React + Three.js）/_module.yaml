@@ -1,9 +1,0 @@
-schema_version: 1
-module_path: web_dashboard
-title: 欧享家本地 Web 控制台（Ice.js + React + Three.js）
-scope:
-    - web/
-source_files: []
-depends_on: []
-related_to:
-    - path: cli_tool
