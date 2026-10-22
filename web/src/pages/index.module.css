@@ -117,73 +117,38 @@
   font-size: 13px;
 }
 
-/* 房间平面图 */
-.map {
-  position: relative;
-  height: 260px;
-  border: 2px solid #d0d5dd;
+/* 房间平面图（SVG） */
+.svg {
+  display: block;
+  width: 100%;
+  height: auto;
   border-radius: 10px;
-  background:
-    linear-gradient(#f1f5f9 1px, transparent 1px),
-    linear-gradient(90deg, #f1f5f9 1px, transparent 1px);
-  background-size: 10% 10%;
   touch-action: none;
-  overflow: hidden;
-}
-
-.mapEdit {
-  border-color: #8b5cf6;
-  border-style: dashed;
-}
-
-.mapHint {
-  position: absolute;
-  bottom: 6px;
-  right: 10px;
-  font-size: 11px;
-  color: #a78bfa;
-  pointer-events: none;
-}
-
-.pin {
-  position: absolute;
-  transform: translate(-50%, -50%);
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 2px;
   user-select: none;
-  z-index: 2;
 }
 
-.pinDrag {
+.svgEdit {
+  outline: 2px dashed #c4b5fd;
+  outline-offset: 2px;
+}
+
+.draggable {
   cursor: grab;
 }
 
-.pinDrag:active {
+.draggable:active {
   cursor: grabbing;
 }
 
-.pinOffline {
-  opacity: 0.5;
+.handle {
+  cursor: nwse-resize;
 }
 
-.pinIcon {
-  font-size: 22px;
-  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.2));
-}
-
-.pinLabel {
+.mapHint {
+  margin-top: 8px;
   font-size: 12px;
-  background: rgba(255, 255, 255, 0.92);
-  border: 1px solid #e3e6eb;
-  border-radius: 6px;
-  padding: 2px 8px;
-  white-space: nowrap;
-  color: #1f2329;
+  color: #8a919f;
 }
-
-.pinOffline .pinLabel { color: #9ca3af; }
 
 .tip {
   background: #f5f3ff;
