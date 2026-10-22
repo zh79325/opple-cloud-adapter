@@ -1,0 +1,16 @@
+{
+  "name": "opple-cli",
+  "version": "0.1.0",
+  "description": "欧享家（欧普 INNO 生态）本地终端控制工具",
+  "type": "module",
+  "bin": {
+    "opple": "./bin/opple.js"
+  },
+  "scripts": {
+    "opple": "node bin/opple.js"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "license": "MIT"
+}
