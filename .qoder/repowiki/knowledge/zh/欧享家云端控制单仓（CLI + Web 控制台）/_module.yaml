@@ -1,6 +1,6 @@
 schema_version: 1
 module_path: ""
-title: 欧享家（Opple）本地控制平台根包
+title: 欧享家云端控制单仓（CLI + Web 控制台）
 scope:
     - README.md
     - package.json

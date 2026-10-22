@@ -3,11 +3,11 @@ schema_version: 1
 locale: zh-CN
 branch: main
 nodes_managed: true
-exported_at: "2026-10-22T06:40:35Z"
+exported_at: "2026-10-22T07:11:13Z"
 modules:
     "":
-        dir_name: 欧享家（Opple）本地控制平台根包
-        title: 欧享家（Opple）本地控制平台根包
+        dir_name: 欧享家云端控制单仓（CLI + Web 控制台）
+        title: 欧享家云端控制单仓（CLI + Web 控制台）
         scope:
             - README.md
             - package.json
@@ -19,8 +19,8 @@ modules:
         depends_on: []
         related_to: []
     cli_tool:
-        dir_name: 欧享家（Opple）本地 CLI 与 Web 服务
-        title: 欧享家（Opple）本地 CLI 与 Web 服务
+        dir_name: 欧享家云端 CLI 与 Web 后端
+        title: 欧享家云端 CLI 与 Web 后端
         scope:
             - src/
             - bin/
@@ -30,8 +30,8 @@ modules:
         related_to:
             - path: web_dashboard
     web_dashboard:
-        dir_name: 欧享家 Web 控制台前端（Ice.js SPA）
-        title: 欧享家 Web 控制台前端（Ice.js SPA）
+        dir_name: 欧享家家庭设备管理控制台（Web 前端）
+        title: 欧享家家庭设备管理控制台（Web 前端）
         scope:
             - web/
         source_files: []

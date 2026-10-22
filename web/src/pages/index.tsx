@@ -1,4 +1,7 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
+import * as THREE from 'three';
+import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+import { RectAreaLightUniformsLib } from 'three/examples/jsm/lights/RectAreaLightUniformsLib.js';
 import styles from './index.module.css';
 
 export const pageConfig = () => ({
@@ -322,157 +325,291 @@ function HomeView({ home, onOpenRoom }: { home: Home | undefined; onOpenRoom: (g
   );
 }
 
-// ---- 3D 预览：CSS 3D 房间盒子，支持拖拽旋转 / 滚轮缩放 ----
+// ---- 3D 预览：Three.js（WebGL）真实光照渲染，OrbitControls 自由视角 ----
 function RoomScene3D({ room }: { room: Room }) {
+  const mountRef = useRef<HTMLDivElement | null>(null);
+  const controlsRef = useRef<OrbitControls | null>(null);
   const { shape } = room;
-  const DEFAULT_ROT = { x: 56, y: -26 };
-  const [rot, setRot] = useState(DEFAULT_ROT);
-  const [pan, setPan] = useState({ x: 0, y: 0 });
-  const [zoom, setZoom] = useState(1);
-  const dragRef = useRef<{
-    px: number; py: number; rx: number; ry: number; panX: number; panY: number;
-    mode: 'rotate' | 'pan';
-  } | null>(null);
-  const sceneRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
-    const el = sceneRef.current;
-    if (!el) return undefined;
-    const onWheel = (e: WheelEvent) => {
-      e.preventDefault();
-      setZoom((z) => Math.min(1.9, Math.max(0.55, z * (e.deltaY > 0 ? 0.93 : 1.075))));
-    };
-    el.addEventListener('wheel', onWheel, { passive: false });
-    return () => el.removeEventListener('wheel', onWheel);
-  }, []);
+    const mount = mountRef.current;
+    if (!mount) return undefined;
+    const W0 = mount.clientWidth || 640;
+    const H0 = mount.clientHeight || 480;
 
-  const W = 420;
-  const D = Math.round((shape.depth / shape.w) * W);
-  const H = Math.round((shape.h / shape.w) * W);
-  const positioned = room.devices.filter(inSpace);
-  // 坐标系：以房间地面为 y=0，天花为 y=-H（x/z 以盒子中心为 0）
-  const px = (x: number) => (x / 100) * W - W / 2;
-  const pz = (y: number) => (y / 100) * D - D / 2;
-  const pe = (e: number) => -(e / 100) * H;
+    // 世界单位=米；以地面为 y=0，房间中心 x/z=0
+    const wm = shape.w * UNIT;
+    const dm = shape.depth * UNIT;
+    const hm = shape.h * UNIT;
+    const wx = (x: number) => (x / 100) * wm - wm / 2;
+    const wz = (y: number) => (y / 100) * dm - dm / 2;
+    const wy = (e: number) => (e / 100) * hm;
+    const positioned = room.devices.filter(inSpace);
+
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(50, W0 / H0, 0.05, 80);
+    camera.position.set(wm * 0.85, hm * 2.6, dm * 1.6);
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
+    renderer.setSize(W0, H0);
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.15;
+    mount.appendChild(renderer.domElement);
+
+    // RectAreaLight（线光源）所需的 LTC uniforms，init 幂等
+    RectAreaLightUniformsLib.init();
+    // 底光：保证暗部轮廓可见，不干扰灯光色彩
+    scene.add(new THREE.HemisphereLight(0x3a4a6f, 0x0a0e1a, 0.5));
+
+    const stdMat = (opts: THREE.MeshStandardMaterialParameters) => new THREE.MeshStandardMaterial(opts);
+    const floor = new THREE.Mesh(
+      new THREE.PlaneGeometry(wm, dm),
+      stdMat({ color: 0x1c2334, roughness: 0.88, metalness: 0.05 }),
+    );
+    floor.rotation.x = -Math.PI / 2;
+    floor.receiveShadow = true;
+    scene.add(floor);
+    const grid = new THREE.GridHelper(wm, Math.max(4, Math.round(wm / 0.5)), 0x324064, 0x26304c);
+    grid.scale.z = dm / wm;
+    grid.position.y = 0.004;
+    scene.add(grid);
+    const ceil = new THREE.Mesh(
+      new THREE.PlaneGeometry(wm, dm),
+      stdMat({ color: 0x151b2c, roughness: 0.95, transparent: true, opacity: 0.55, side: THREE.DoubleSide }),
+    );
+    ceil.rotation.x = Math.PI / 2;
+    ceil.position.y = hm;
+    scene.add(ceil);
+    const wallMat = stdMat({ color: 0x1d2540, roughness: 0.95, transparent: true, opacity: 0.92, side: THREE.DoubleSide });
+    const back = new THREE.Mesh(new THREE.PlaneGeometry(wm, hm), wallMat);
+    back.position.set(0, hm / 2, -dm / 2);
+    back.receiveShadow = true;
+    const left = new THREE.Mesh(new THREE.PlaneGeometry(dm, hm), wallMat);
+    left.rotation.y = Math.PI / 2;
+    left.position.set(-wm / 2, hm / 2, 0);
+    left.receiveShadow = true;
+    const right = new THREE.Mesh(new THREE.PlaneGeometry(dm, hm), wallMat);
+    right.rotation.y = -Math.PI / 2;
+    right.position.set(wm / 2, hm / 2, 0);
+    right.receiveShadow = true;
+    scene.add(back, left, right);
+
+    /** 设备名标签（Canvas 纹理 Sprite，中文可渲染） */
+    const makeLabel = (text: string): THREE.Sprite => {
+      const cv = document.createElement('canvas');
+      const ctx = cv.getContext('2d')!;
+      const font = '600 30px -apple-system, PingFang SC, sans-serif';
+      ctx.font = font;
+      cv.width = Math.ceil(ctx.measureText(text).width) + 28;
+      cv.height = 48;
+      const c2 = cv.getContext('2d')!;
+      c2.font = font;
+      c2.fillStyle = 'rgba(10, 15, 30, 0.72)';
+      c2.beginPath();
+      c2.roundRect(0, 0, cv.width, cv.height, 12);
+      c2.fill();
+      c2.fillStyle = 'rgba(231, 236, 246, 0.95)';
+      c2.textBaseline = 'middle';
+      c2.fillText(text, 14, cv.height / 2 + 2);
+      const tex = new THREE.CanvasTexture(cv);
+      tex.anisotropy = 4;
+      const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false }));
+      const hM = 0.22;
+      sp.scale.set((cv.width / cv.height) * hM, hM, 1);
+      return sp;
+    };
+
+    // 设备：吸顶灯 = 自发光圆盘 + 暖色点光；灯带 = 自发光折线管 + 沿段紫色点光（一律按在线渲染，不区分离线）
+    positioned.forEach((d, i) => {
+      const p = d.position ?? defaultPos(d, i, positioned);
+      if (!p || p.kind === 'point') return;
+      const elev = p.elev ?? 0;
+      const g = new THREE.Group();
+
+      if (p.kind === 'circle') {
+        const rm = Math.max(0.08, (p.r / 100) * wm);
+        const disk = new THREE.Mesh(
+          new THREE.CircleGeometry(rm, 48),
+          stdMat({
+            color: 0xfff3d6,
+            emissive: 0xffc63f,
+            emissiveIntensity: 1.8,
+            roughness: 0.4,
+            side: THREE.DoubleSide,
+          }),
+        );
+        disk.rotation.x = Math.PI / 2; // 面朝下
+        disk.position.set(wx(p.x), wy(elev), wz(p.y));
+        g.add(disk);
+        const pl = new THREE.PointLight(0xffc98a, 26, 0, 2);
+        pl.position.copy(disk.position).add(new THREE.Vector3(0, -0.08, 0));
+        pl.castShadow = true;
+        pl.shadow.mapSize.set(1024, 1024);
+        pl.shadow.bias = -0.004;
+        g.add(pl);
+        const lb = makeLabel(d.name);
+        lb.position.set(wx(p.x), wy(elev) - 0.16, wz(p.y));
+        g.add(lb);
+      }
+
+      if (p.kind === 'segment') {
+        const pts = p.points.map((pt) => new THREE.Vector3(wx(pt.x), wy(elev), wz(pt.y)));
+        // 贴墙灯带保持折线段的直线形态（不做样条平滑，直角弯不得鼓弧）；
+        // 拐角放同材质小球衔接相邻管段，盖住圆截面交叉缺口与法线跳变，视觉仍是连续平滑光带
+        const segMat = stdMat({
+          color: 0xd8ccff,
+          emissive: 0x8b5cf6,
+          emissiveIntensity: 2.2,
+          roughness: 0.5,
+        });
+        const ballGeo = new THREE.SphereGeometry(0.022, 12, 8);
+        for (let j = 0; j < pts.length - 1; j++) {
+          g.add(new THREE.Mesh(new THREE.TubeGeometry(new THREE.LineCurve3(pts[j], pts[j + 1]), 8, 0.022, 10, false), segMat));
+        }
+        for (let j = 1; j < pts.length - 1; j++) {
+          const ball = new THREE.Mesh(ballGeo, segMat);
+          ball.position.copy(pts[j]);
+          g.add(ball);
+        }
+        // 线光源：每段一个 RectAreaLight（宽=段长、高=0.04 细缝，单面发光）
+        // 踢脚带（elev<50）光朝房间内侧、灯槽（elev>=50）朝下偏内洗墙；强度为经验值可调
+        for (let j = 0; j < pts.length - 1; j++) {
+          const a = pts[j];
+          const b = pts[j + 1];
+          const len = a.distanceTo(b);
+          if (len < 0.05) continue;
+          const mid = a.clone().add(b).multiplyScalar(0.5);
+          const horiz = new THREE.Vector3(-(b.z - a.z), 0, b.x - a.x).normalize();
+          if (mid.clone().add(horiz).lengthSq() > mid.lengthSq()) horiz.negate(); // 取朝房间中心一侧
+          const down = new THREE.Vector3(0, -1, 0);
+          const aim = elev >= 50
+            ? down.clone().addScaledVector(horiz, 0.45).normalize()
+            : horiz.clone().addScaledVector(down, 0.3).normalize();
+          const rl = new THREE.RectAreaLight(0xa78bfa, 30, len, 0.04);
+          rl.position.copy(mid);
+          rl.lookAt(mid.clone().add(aim));
+          g.add(rl);
+        }
+        let li = 0;
+        for (let j = 1; j < pts.length - 1; j++) {
+          if (pts[j].distanceTo(pts[j + 1]) > pts[li].distanceTo(pts[li + 1])) li = j;
+        }
+        const lb = makeLabel(d.name);
+        lb.position.copy(pts[li]).add(pts[li + 1]).multiplyScalar(0.5).add(new THREE.Vector3(0, 0.14, 0));
+        g.add(lb);
+      }
+
+      scene.add(g);
+    });
+
+    // 自由视角：左键旋转 / 右键平移 / 滚轮缩放，带阻尼
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.target.set(0, hm * 0.5, 0);
+    controls.enableDamping = true;
+    controls.dampingFactor = 0.08;
+    controls.minDistance = 0.8;
+    controls.maxDistance = 25;
+    controls.update();
+    controls.saveState(); // 双击/按钮复位基准
+    controlsRef.current = controls;
+    const onDbl = (e: MouseEvent) => {
+      e.preventDefault();
+      controls.reset();
+    };
+    renderer.domElement.addEventListener('dblclick', onDbl);
+    const onCtx = (e: MouseEvent) => e.preventDefault();
+    renderer.domElement.addEventListener('contextmenu', onCtx);
+
+    // 自适应容器尺寸
+    const ro = new ResizeObserver(() => {
+      const w = mount.clientWidth;
+      const h = mount.clientHeight;
+      if (!w || !h) return;
+      camera.aspect = w / h;
+      camera.updateProjectionMatrix();
+      renderer.setSize(w, h);
+    });
+    ro.observe(mount);
+
+    let raf = 0;
+    const loop = () => {
+      controls.update();
+      renderer.render(scene, camera);
+      raf = requestAnimationFrame(loop);
+    };
+    loop();
+
+    return () => {
+      cancelAnimationFrame(raf);
+      ro.disconnect();
+      renderer.domElement.removeEventListener('dblclick', onDbl);
+      renderer.domElement.removeEventListener('contextmenu', onCtx);
+      controls.dispose();
+      controlsRef.current = null;
+      scene.traverse((obj) => {
+        const mesh = obj as THREE.Mesh;
+        if (mesh.geometry) mesh.geometry.dispose();
+        const mat = mesh.material as THREE.MeshStandardMaterial | THREE.SpriteMaterial | undefined;
+        if (Array.isArray(mat)) mat.forEach((m) => m.dispose());
+        else if (mat) {
+          if (mat.map) mat.map.dispose();
+          mat.dispose();
+        }
+      });
+      renderer.dispose();
+      if (renderer.domElement.parentElement === mount) mount.removeChild(renderer.domElement);
+    };
+  }, [room]);
 
   return (
-    <div
-      ref={sceneRef}
-      className={styles.scene}
-      onPointerDown={(e) => {
-        // 左键拖拽旋转；右键（或 Ctrl/Cmd+左键）拖拽平移
-        const mode: 'rotate' | 'pan' = e.button === 2 || e.ctrlKey || e.metaKey ? 'pan' : 'rotate';
-        dragRef.current = { px: e.clientX, py: e.clientY, rx: rot.x, ry: rot.y, panX: pan.x, panY: pan.y, mode };
-        (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-      }}
-      onPointerMove={(e) => {
-        const d = dragRef.current;
-        if (!d) return;
-        if (d.mode === 'pan') {
-          setPan({ x: d.panX + (e.clientX - d.px), y: d.panY + (e.clientY - d.py) });
-          return;
-        }
-        setRot({
-          // 俯仰近乎全向（可从正上方转到正下方仰视地面），水平环视不限圈数
-          x: clamp(d.rx - (e.clientY - d.py) * 0.22, -88, 88),
-          y: d.ry + (e.clientX - d.px) * 0.28,
-        });
-      }}
-      onPointerUp={() => { dragRef.current = null; }}
-      onPointerLeave={() => { dragRef.current = null; }}
-      onContextMenu={(e) => e.preventDefault()}
-      onDoubleClick={() => { setRot(DEFAULT_ROT); setPan({ x: 0, y: 0 }); setZoom(1); }}
-    >
-      <div
-        className={styles.sceneStage}
-        style={{ perspective: 1500, transform: `translate(${pan.x}px, ${pan.y}px)` }}
-      >
-        <div className={styles.roomBoxWrap} style={{ transform: `translateY(${Math.round(H * 0.5)}px)` }}>
-        <div
-          className={styles.roomBox}
-          style={{ transform: `scale(${zoom}) rotateX(${rot.x}deg) rotateY(${rot.y}deg)` }}
-        >
-          <div className={`${styles.face} ${styles.floor}`}
-            style={{ width: W, height: D, transform: 'translate(-50%,-50%) rotateX(90deg)' }} />
-          <div className={`${styles.face} ${styles.ceiling}`}
-            style={{ width: W, height: D, transform: `translate(-50%,-50%) rotateX(90deg) translateZ(${H}px)` }} />
-          <div className={`${styles.face} ${styles.wall}`}
-            style={{ width: W, height: H, transform: `translate(-50%,-50%) translate3d(0, ${-H / 2}px, ${-D / 2}px)` }} />
-          <div className={`${styles.face} ${styles.wall}`}
-            style={{ width: D, height: H, transform: `translate(-50%,-50%) rotateY(90deg) translate3d(0, ${-H / 2}px, ${-W / 2}px)` }} />
-          <div className={`${styles.face} ${styles.wall}`}
-            style={{ width: D, height: H, transform: `translate(-50%,-50%) rotateY(-90deg) translate3d(0, ${-H / 2}px, ${-W / 2}px)` }} />
-
-          {positioned.map((d, i) => {
-            const p = d.position ?? defaultPos(d, i, positioned);
-            const elev = p.elev ?? 0;
-
-            if (p.kind === 'circle') {
-              const size = (p.r / 100) * W * 2;
-              return (
-                <div key={d.vDeviceId}
-                  className={`${styles.obj3d} ${d.online ? styles.lamp3D : styles.objOff}`}
-                  style={{
-                    width: size, height: size,
-                    transform: `translate(-50%,-50%) translate3d(${px(p.x)}px, ${pe(elev)}px, ${pz(p.y)}px) rotateX(90deg)`,
-                  }}>
-                  <span className={styles.label3D}>{d.name}</span>
-                </div>
-              );
-            }
-
-            if (p.kind === 'segment') {
-              // 软带路径：相邻顶点逐段渲染为发光长条（与 2D 编辑的折线路径一一对应）
-              const pts = p.points;
-              const segs = pts.slice(0, -1).map((a, idx) => {
-                const b = pts[idx + 1];
-                const dx = px(b.x) - px(a.x);
-                const dz = pz(b.y) - pz(a.y);
-                return {
-                  midX: (px(a.x) + px(b.x)) / 2,
-                  midZ: (pz(a.y) + pz(b.y)) / 2,
-                  len: Math.max(2, Math.sqrt(dx * dx + dz * dz)),
-                  angle: Math.atan2(dz, dx) * (180 / Math.PI),
-                };
-              });
-              const li = segs.reduce((best, s, idx) => (s.len > segs[best].len ? idx : best), 0);
-              const stripCls = d.online ? styles.strip3D : styles.objOff;
-              return [
-                ...segs.map((s, idx) => (
-                  <div key={`${d.vDeviceId}-s${idx}`} className={`${styles.obj3d} ${stripCls}`}
-                    style={{
-                      width: s.len, height: 12, borderRadius: 999,
-                      transform: `translate(-50%,-50%) translate3d(${s.midX}px, ${pe(elev)}px, ${s.midZ}px) rotateX(90deg) rotateZ(${-s.angle}deg)`,
-                    }} />
-                )),
-                // 设备标签叠在最长段上（与灯带同平面，文字跟随段方向）
-                <div key={`${d.vDeviceId}-lb`} className={styles.obj3d}
-                  style={{
-                    transform: `translate(-50%,-50%) translate3d(${segs[li].midX}px, ${pe(elev)}px, ${segs[li].midZ}px) rotateX(90deg) rotateZ(${-segs[li].angle}deg)`,
-                  }}>
-                  <span className={styles.label3D}>{d.name}</span>
-                </div>,
-              ];
-            }
-
-            return null;
-          })}
-        </div>
-        </div>
-      </div>
+    <div ref={mountRef} className={styles.scene}>
       <div className={styles.sceneToolbar}>
         <span className={styles.sceneHint}>左键拖拽旋转 · 右键拖动平移 · 滚轮缩放 · 双击复位</span>
         <span>{toM(shape.w)}m × {toM(shape.depth)}m × {toM(shape.h)}m</span>
         <button
           type="button"
           className={styles.viewResetBtn}
-          onClick={() => { setRot(DEFAULT_ROT); setPan({ x: 0, y: 0 }); setZoom(1); }}
+          onClick={() => controlsRef.current?.reset()}
           title="恢复默认视角"
         >
           复位视角
         </button>
       </div>
     </div>
+  );
+}
+
+// ---- 米数输入框：内部草稿态自由编辑（可删空、可敲 "0." 等中间态，不被受控值回写），
+// 合法数值即时联动滑杆，失焦/回车收口（非法或空内容恢复显示受控值） ----
+function NumField({ value, min, max, onCommit }: {
+  value: number;
+  min: number;
+  max: number;
+  onCommit: (v: number) => void;
+}) {
+  const [draft, setDraft] = useState<string | null>(null); // null = 非编辑态，显示受控值
+  const handle = (raw: string) => {
+    setDraft(raw);
+    const t = raw.trim();
+    const m = Number(t);
+    if (t !== '' && Number.isFinite(m)) {
+      const v = Math.min(max, Math.max(min, m));
+      if (v !== value) onCommit(v);
+    }
+  };
+  const finish = () => {
+    if (draft === null) return;
+    handle(draft);
+    setDraft(null);
+  };
+  return (
+    <input className={styles.numInput} type="number" step={0.1} min={min} max={max}
+      value={draft ?? String(value)}
+      onChange={(e) => handle(e.target.value)}
+      onBlur={finish}
+      onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }} />
   );
 }
 
@@ -636,13 +773,8 @@ function RoomEditor({ room, projectCode, onSaved, onShapeSaved, onDone }: {
       <span className={styles.panelLabel}>{label}</span>
       <input className={styles.range} type="range" min={min} max={max} value={clamp(units, min, max)}
         onChange={(e) => onChange(Number(e.target.value))} />
-      <input className={styles.numInput} type="number" step={0.1} min={toM(min)} max={toM(max)}
-        value={Number((units * UNIT).toFixed(1))}
-        onChange={(e) => {
-          if (e.target.value === '') return;
-          const m = Number(e.target.value);
-          if (Number.isFinite(m)) onChange(clamp(m / UNIT, min, max));
-        }} />
+      <NumField value={Number((units * UNIT).toFixed(1))} min={min * UNIT} max={max * UNIT}
+        onCommit={(m) => onChange(clamp(m / UNIT, min, max))} />
     </label>
   );
 
@@ -654,13 +786,8 @@ function RoomEditor({ room, projectCode, onSaved, onShapeSaved, onDone }: {
         <span className={styles.panelLabel}>{d.name}</span>
         <input className={styles.range} type="range" min={0} max={100} value={drop}
           onChange={(e) => setElev(d.vDeviceId, 100 - Number(e.target.value))} />
-        <input className={styles.numInput} type="number" step={0.1} min={0} max={toM(100)}
-          value={Number((drop * UNIT).toFixed(1))}
-          onChange={(e) => {
-            if (e.target.value === '') return;
-            const m = Number(e.target.value);
-            if (Number.isFinite(m)) setElev(d.vDeviceId, 100 - clamp(m / UNIT, 0, 100));
-          }} />
+        <NumField value={Number((drop * UNIT).toFixed(1))} min={0} max={100 * UNIT}
+          onCommit={(m) => setElev(d.vDeviceId, 100 - clamp(m / UNIT, 0, 100))} />
       </label>
     );
   };

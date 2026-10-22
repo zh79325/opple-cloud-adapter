@@ -1,6 +1,6 @@
 schema_version: 1
 module_path: cli_tool
-title: 欧享家（Opple）本地 CLI 与 Web 服务
+title: 欧享家云端 CLI 与 Web 后端
 scope:
     - src/
     - bin/

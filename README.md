@@ -1,6 +1,6 @@
 # opple-cloud-adapter — 欧享家（欧普 INNO 生态）本地控制
 
-通过逆向欧享家云端 API，实现欧普 INNO 设备的本地统一控制：CLI + Web 控制台（含 3D 空间建模）。
+通过逆向欧享家云端 API，实现欧普 INNO 设备的本地统一控制：CLI + Web 控制台（含 Three.js WebGL 3D 空间建模与真实光照渲染）。
 协议逆向全记录见 `docs/reverse-engineering-report.md`。
 
 ## 组成
@@ -10,7 +10,7 @@
 | CLI | `bin/opple.js` + `src/cli.js` | 零依赖（Node 22+）命令行控制 |
 | API 客户端 | `src/opple/client.js` | OppleClient（请求头/鉴权/接口封装） |
 | Web 后端 | `src/opple/server.js` | 零依赖 Node http 服务（端口 5170） |
-| Web 前端 | `web/`（ice.js v3） | 家庭/房间/设备 + 位置编辑 + 3D 预览 |
+| Web 前端 | `web/`（ice.js v3 + Three.js） | 家庭/房间/设备 + 位置编辑 + WebGL 3D 光照预览 |
 | 逆向产物 | `data/` | APK、反编译 JS、552 个接口清单、抓包样本 |
 | 空间数据 | `data/device-positions.json` | 房间尺寸 + 设备 3D 几何位置 |
 | 数据快照 | `data/local-tree.json` | 家庭/房间/设备本地快照（"同步数据"写入） |
@@ -34,8 +34,10 @@ node src/opple/server.js                       # 或 npm run web
 # 打开 http://localhost:5170
 # ⛅ 同步数据：一键拉取欧享家云端最新家庭/房间/设备到本地快照（data/local-tree.json）
 #      之后页面数据全部读本地快照，不再每次请求云端；位置编辑仍实时保存
-# ➜ 家庭页：房间卡片列表，点击进入房间 3D 预览（拖拽旋转 / 滚轮缩放）
-# ✎ 编辑布局：二维平面拖拽设备（灯=圆盘可调大小、灯带=长条可调方向长度）+ 尺寸/高度滑杆
+# ➜ 家庭页：房间卡片列表，点击进入房间 WebGL 3D 预览
+#      Three.js 真实光照：吸顶灯=暖色点光源、灯带=紫色点光源，实时照亮墙面/地面并投影
+#      自由视角：左键旋转 / 右键平移 / 滚轮缩放 / 双击或「复位视角」按钮还原
+# ✎ 编辑布局：二维平面拖拽设备（灯=圆盘可调大小、灯带=折线路径可弯折）+ 尺寸/高度滑杆与数字输入
 ```
 
 ## Token 获取
@@ -88,7 +90,7 @@ Reqable 抓包（手机连电脑代理 + 信任证书），从任意 `iot2.opple
 - ✅ 请求头/鉴权/接口结构（CLI + Web 全链路，15 台设备真实数据）
 - ✅ 三层模型（GetHomeList → FindUserRoomList → FindDeviceAndGroupListV2）
 - ✅ 调光/调色温/调颜色 CallAction（4 条抓包样本 + CXCY 编码与官方枚举比对吻合）
-- ✅ 位置编辑/3D 渲染端到端（拖拽→保存→刷新还原）
+- ✅ 位置编辑/WebGL 3D 光照渲染端到端（Three.js 点光源/自发光/阴影，拖拽→保存→刷新还原）
 - ✅ 排除/恢复端到端（清单切换→3D/编辑器/导出同步生效，位置数据保留）
 - ✅ 灯带路径编辑（拖顶点弯折/段间加顶点/双击删除 → 3D 多段折线渲染，存储升级为 points）
 - ✅ 本地快照同步（POST /api/sync 落盘 → GET /api/tree 本地毫秒级响应，位置数据实时合并）
