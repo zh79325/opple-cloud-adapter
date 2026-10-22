@@ -1,0 +1,6 @@
+*.apk
+*.har
+data/decompiled.js
+data/extracted/
+node_modules/
+__pycache__/
