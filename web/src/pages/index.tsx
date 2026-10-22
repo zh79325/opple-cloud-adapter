@@ -631,24 +631,29 @@ function RoomEditor({ room, projectCode, onSaved, onShapeSaved, onDone }: {
   const drag = useRef<{ id: string; part: string; grabPx: { x: number; y: number }; grabPos: Pos } | null>(null);
   const [snapHint, setSnapHint] = useState<SnapHint | null>(null);
 
-  /** 收集吸附候选点：其他设备的灯带顶点与吸顶灯圆心 */
-  const snapTargets = (selfId: string): PathPoint[] => devices
-    .filter((d) => d.vDeviceId !== selfId)
+  /** 收集吸附候选点：其他设备的灯带顶点与吸顶灯圆心；
+   *  单顶点拖动（selfSkipIdx 传入）时额外含自身灯带其余顶点，否则无法与自身另一端对齐出水平/垂直段；
+   *  body 平移（不传）排除自身，防自身顶点互吸跳动 */
+  const snapTargets = (selfId: string, selfSkipIdx?: number): PathPoint[] => devices
     .flatMap((d) => {
       const p = d.position;
       if (!p) return [];
-      if (p.kind === 'segment') return p.points;
-      if (p.kind === 'circle') return [{ x: p.x, y: p.y }];
+      const self = d.vDeviceId === selfId;
+      if (p.kind === 'segment') {
+        if (self) return selfSkipIdx === undefined ? [] : p.points.filter((_, j) => j !== selfSkipIdx);
+        return p.points;
+      }
+      if (p.kind === 'circle') return self ? [] : [{ x: p.x, y: p.y }];
       return [];
     });
 
-  /** 吸附：其他顶点轴对齐（同点双向命中=端点对接）+ 墙边/贴墙吸边，返回修正坐标与提示 */
-  const computeSnap = (nx: number, ny: number, selfId: string, edges: number[]) => {
+  /** 吸附：候选点轴对齐（同点双向命中=端点对接）+ 墙边/贴墙吸边，返回修正坐标与提示 */
+  const computeSnap = (nx: number, ny: number, selfId: string, edges: number[], selfSkipIdx?: number) => {
     let bx: { d: number; v: number; pt: PathPoint | null } | null = null;
     let by: { d: number; v: number; pt: PathPoint | null } | null = null;
     const better = (cur: typeof bx, d: number, v: number, pt: PathPoint | null) =>
       (!cur || Math.abs(d) < Math.abs(cur.d) ? { d, v, pt } : cur);
-    for (const t of snapTargets(selfId)) {
+    for (const t of snapTargets(selfId, selfSkipIdx)) {
       const ddx = t.x - nx;
       if (Math.abs(ddx) < SNAP) bx = better(bx, ddx, t.x, t);
       const ddy = t.y - ny;
@@ -695,11 +700,55 @@ function RoomEditor({ room, projectCode, onSaved, onShapeSaved, onDone }: {
     };
   };
 
+  const lastPick = useRef<{ id: string; x: number; y: number } | null>(null);
+
+  /** 点击位置命中的设备 id 列表（上→下，去重），用于重叠时循环穿透选中被压住的设备 */
+  const hitDevices = (e: React.PointerEvent): string[] => {
+    const ids: string[] = [];
+    for (const el of document.elementsFromPoint(e.clientX, e.clientY)) {
+      if (el === svgRef.current) break;
+      const id = el.closest?.('[data-dev-id]')?.getAttribute('data-dev-id');
+      if (id && !ids.includes(id)) ids.push(id);
+    }
+    return ids;
+  };
+
+  /** 将设备移到渲染末尾 = SVG 最上层（重叠时点击谁就提谁，方便调整被压住的端点） */
+  const raiseDevice = (id: string) => {
+    setDevices((ds) => {
+      const i = ds.findIndex((x) => x.vDeviceId === id);
+      if (i < 0 || i === ds.length - 1) return ds;
+      const next = [...ds];
+      const [it] = next.splice(i, 1);
+      next.push(it);
+      return next;
+    });
+  };
+
   const onPointerDown = (e: React.PointerEvent, d: Device, part: string) => {
     e.preventDefault();
     e.stopPropagation();
-    drag.current = { id: d.vDeviceId, part, grabPx: toPct(e), grabPos: d.position! };
-    (e.currentTarget as Element).setPointerCapture(e.pointerId);
+    let target = d;
+    let actPart = part;
+    // 重叠穿透：同处再次点击最上层时，循环切到被压住的下一台并置顶（Figma 式循环选择）
+    const hits = hitDevices(e);
+    const again = !!lastPick.current
+      && lastPick.current.id === d.vDeviceId
+      && Math.abs(lastPick.current.x - e.clientX) < 8
+      && Math.abs(lastPick.current.y - e.clientY) < 8;
+    if (hits.length > 1 && again) {
+      const nextId = hits[(hits.indexOf(d.vDeviceId) + 1) % hits.length];
+      const nd = devices.find((x) => x.vDeviceId === nextId);
+      if (nd?.position) {
+        target = nd;
+        actPart = 'body';
+      }
+    }
+    lastPick.current = { id: target.vDeviceId, x: e.clientX, y: e.clientY };
+    raiseDevice(target.vDeviceId);
+    drag.current = { id: target.vDeviceId, part: actPart, grabPx: toPct(e), grabPos: target.position! };
+    // capture 设在稳定的 svg 根上：置顶重排会移动设备 DOM 节点，节点上的 capture 会丢拖拽
+    svgRef.current?.setPointerCapture(e.pointerId);
   };
 
   const onPointerMove = (e: React.PointerEvent) => {
@@ -747,11 +796,11 @@ function RoomEditor({ room, projectCode, onSaved, onShapeSaved, onDone }: {
       }
       patch = () => ({ ...g, points: g.points.map((pt) => ({ x: clamp(pt.x + dx + adjX), y: clamp(pt.y + dy + adjY) })) });
     } else {
-      // 单顶点：端点对接 / 吸边 / 水平垂直对齐
+      // 单顶点：端点对接 / 吸边 / 水平垂直对齐（含自身灯带其余顶点，可拉出垂直/水平段）
       const m = /^p:(\d+)$/.exec(ctx.part);
       const idx = m ? Number(m[1]) : -1;
       if (idx < 0 || idx >= g.points.length) return;
-      const s = computeSnap(p.x, p.y, ctx.id, [0, 100]);
+      const s = computeSnap(p.x, p.y, ctx.id, [0, 100], idx);
       hint = { gx: s.gx, gy: s.gy, vertex: s.vertex };
       patch = () => ({ ...g, points: g.points.map((pt, j) => (j === idx ? { x: clamp(s.x), y: clamp(s.y) } : { ...pt })) });
     }
@@ -776,7 +825,7 @@ function RoomEditor({ room, projectCode, onSaved, onShapeSaved, onDone }: {
     const points = [...g.points.slice(0, segIdx + 1), np, ...g.points.slice(segIdx + 1)];
     setDevices((ds) => ds.map((x) => (x.vDeviceId !== d.vDeviceId ? x : { ...x, position: { ...g, points } })));
     drag.current = { id: d.vDeviceId, part: `p:${segIdx + 1}`, grabPx: toPct(e), grabPos: { ...g, points } };
-    (e.currentTarget as Element).setPointerCapture(e.pointerId);
+    svgRef.current?.setPointerCapture(e.pointerId);
     setDirty(true);
   };
 
@@ -793,6 +842,14 @@ function RoomEditor({ room, projectCode, onSaved, onShapeSaved, onDone }: {
     setDevices((ds) => ds.map((d) => {
       if (d.vDeviceId !== id) return d;
       return { ...d, position: d.position ? ({ ...d.position, elev } as Pos) : d.position };
+    }));
+    setDirty(true);
+  };
+
+  const setR = (id: string, r: number) => {
+    setDevices((ds) => ds.map((d) => {
+      if (d.vDeviceId !== id || d.position?.kind !== 'circle') return d;
+      return { ...d, position: { ...d.position, r } };
     }));
     setDirty(true);
   };
@@ -842,6 +899,20 @@ function RoomEditor({ room, projectCode, onSaved, onShapeSaved, onDone }: {
     </label>
   );
 
+  // 半径行：仅吸顶灯，滑杆/数字输入双维护（米）；min/max 与 2D 手柄、3D 渲染一致
+  const radiusRow = (d: Device) => {
+    if (d.position?.kind !== 'circle') return null;
+    return (
+      <label key={`${d.vDeviceId}-r`} className={styles.panelRow} title={`${d.name} · 半径`}>
+        <span className={styles.panelLabel}>半径</span>
+        <input className={styles.range} type="range" min={3} max={30} value={clamp(d.position.r, 3, 30)}
+          onChange={(e) => setR(d.vDeviceId, Number(e.target.value))} />
+        <NumField value={Number((d.position.r * UNIT).toFixed(1))} min={3 * UNIT} max={30 * UNIT}
+          onCommit={(m) => setR(d.vDeviceId, clamp(m / UNIT, 3, 30))} />
+      </label>
+    );
+  };
+
   // 安装高度行：滑杆值为“距顶百分比”，输入框为距顶米数
   const elevRow = (d: Device) => {
     const drop = 100 - (d.position?.elev ?? 0);
@@ -888,7 +959,7 @@ function RoomEditor({ room, projectCode, onSaved, onShapeSaved, onDone }: {
               const cx = pts.reduce((s, pt) => s + pt.x, 0) / pts.length;
               const cy = pts.reduce((s, pt) => s + pt.y, 0) / pts.length;
               return (
-                <g key={d.vDeviceId} opacity={op} className={styles.draggable}
+                <g key={d.vDeviceId} data-dev-id={d.vDeviceId} opacity={op} className={styles.draggable}
                   onPointerDown={(e) => onPointerDown(e, d, 'body')}>
                   <path d={pathD} stroke="#7c3aed" strokeWidth={26} fill="none" strokeLinecap="round" strokeLinejoin="round" />
                   <path d={pathD} stroke="#c4b5fd" strokeWidth={12} fill="none" strokeLinecap="round" strokeLinejoin="round" />
@@ -915,7 +986,7 @@ function RoomEditor({ room, projectCode, onSaved, onShapeSaved, onDone }: {
 
             if (p.kind === 'circle') {
               return (
-                <g key={d.vDeviceId} opacity={op} className={styles.draggable}
+                <g key={d.vDeviceId} data-dev-id={d.vDeviceId} opacity={op} className={styles.draggable}
                   onPointerDown={(e) => onPointerDown(e, d, 'body')}>
                   <circle cx={sx(p.x)} cy={sy(p.y)} r={sr(p.r)} fill="#fbbf24" stroke="#f59e0b" strokeWidth={4} opacity={0.9} />
                   <circle cx={sx(p.x)} cy={sy(p.y)} r={sr(p.r * 0.45)} fill="#fffbeb" opacity={0.65} />
@@ -961,7 +1032,7 @@ function RoomEditor({ room, projectCode, onSaved, onShapeSaved, onDone }: {
 
         <div className={styles.panelGroup}>
           <span className={styles.panelGroupTitle}>安装位置 · 距顶（米）</span>
-          {devices.map(elevRow)}
+          {devices.map((d) => [elevRow(d), radiusRow(d)])}
           {!devices.length && (
             <span className={styles.panelEmpty}>房间内暂无参与布局的灯具</span>
           )}
