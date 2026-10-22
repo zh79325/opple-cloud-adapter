@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useRef } from 'react';
+import { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { RectAreaLightUniformsLib } from 'three/examples/jsm/lights/RectAreaLightUniformsLib.js';
@@ -55,6 +55,15 @@ interface Home {
 const API = '/api';
 const UNIT = 0.05; // 每百分比单位对应米数（100 单位 = 5m）
 const SNAP = 1.2; // 编辑器吸附阈值（0-100 坐标，1 单位 ≈ 画布宽 1%）
+
+// 圣诞氛围「本地预览」调色板：仅改 3D 材质/光源做模拟渲染，不调用任何在线设置接口；
+// 灯带按渲染顺序 红→绿→金 循环，吸顶灯转暖金低亮底光
+const XMAS_CEILING = { disk: 0xfff1d9, glow: 0xffd9a0, beam: 0xffd2a0 };
+const XMAS_STRIPS = [
+  { glow: 0xff453a, beam: 0xff6252 }, // 圣诞红
+  { glow: 0x2fe06b, beam: 0x46e884 }, // 森林绿
+  { glow: 0xffd60a, beam: 0xffe07a }, // 圣诞金
+];
 
 const clamp = (v: number, min = 0, max = 100) => Math.round(Math.min(max, Math.max(min, v)));
 const toM = (v: number) => (v * UNIT).toFixed(1);
@@ -333,6 +342,17 @@ function RoomScene3D({ room }: { room: Room }) {
   const mountRef = useRef<HTMLDivElement | null>(null);
   const controlsRef = useRef<OrbitControls | null>(null);
   const { shape } = room;
+  const [ambiance, setAmbiance] = useState<'christmas' | null>(null);
+
+  // 圣诞氛围指令清单：直接下发流水灯效（无静态打底），与 3D 预览同色序，仅生成文本不执行
+  const xmasCmds = useMemo(() => {
+    const lines: string[] = ['── 圣诞氛围 · 操作指令（本地预览生成，未下发真机） ──'];
+    lines.push('# 动态灯效 · 流水（0x14 组包为能力表推断，下发前先真机验证；3D 预览即此效果的本地模拟）');
+    for (const d of room.devices.filter((x) => inSpace(x) && isStrip(x))) {
+      lines.push(`opple scene ${d.vDeviceId} 流水 speed=60 direction=forward`);
+    }
+    return lines.join('\n');
+  }, [room]);
 
   useEffect(() => {
     const mount = mountRef.current;
@@ -424,7 +444,14 @@ function RoomScene3D({ room }: { room: Room }) {
       return sp;
     };
 
-    // 设备：吸顶灯 = 自发光圆盘 + 暖色点光；灯带 = 自发光折线管 + 沿段紫色点光（一律按在线渲染，不区分离线）
+    // 设备：吸顶灯 = 自发光圆盘 + 暖色点光；灯带 = 自发光折线管 + 每段 RectAreaLight 线光源（一律按在线渲染）
+    let stripSeen = 0; // 灯带序号：圣诞氛围按 红→绿→金 循环着色，与指令清单同序
+    // 动态灯效收集：圣诞氛围下灯带子段彩虹流动、吸顶灯呼吸光晕、飘落星点（loop 内逐帧更新，仅本地模拟）
+    const flowMats: { mat: THREE.MeshStandardMaterial; t0: number }[] = [];
+    const flowLights: { light: THREE.RectAreaLight; t0: number }[] = [];
+    const breathMats: THREE.MeshStandardMaterial[] = [];
+    const breathLights: THREE.PointLight[] = [];
+    const breathSprites: { sprite: THREE.Sprite; base: number }[] = [];
     positioned.forEach((d, i) => {
       const p = d.position ?? defaultPos(d, i, positioned);
       if (!p || p.kind === 'point') return;
@@ -433,12 +460,13 @@ function RoomScene3D({ room }: { room: Room }) {
 
       if (p.kind === 'circle') {
         const rm = Math.max(0.08, (p.r / 100) * wm);
+        const xmas = ambiance === 'christmas';
         const disk = new THREE.Mesh(
           new THREE.CircleGeometry(rm, 48),
           stdMat({
-            color: 0xfff3d6,
-            emissive: 0xffc63f,
-            emissiveIntensity: 1.8,
+            color: xmas ? XMAS_CEILING.disk : 0xfff3d6,
+            emissive: xmas ? XMAS_CEILING.glow : 0xffc63f,
+            emissiveIntensity: xmas ? 2.4 : 1.8,
             roughness: 0.4,
             side: THREE.DoubleSide,
           }),
@@ -446,12 +474,40 @@ function RoomScene3D({ room }: { room: Room }) {
         disk.rotation.x = Math.PI / 2; // 面朝下
         disk.position.set(wx(p.x), wy(elev), wz(p.y));
         g.add(disk);
-        const pl = new THREE.PointLight(0xffc98a, 26, 0, 2);
+        // 氛围下亮度减半：吸顶灯只作暖底光，让灯带红绿成为主角
+        const pl = new THREE.PointLight(xmas ? XMAS_CEILING.beam : 0xffc98a, xmas ? 13 : 26, 0, 2);
+        if (xmas) {
+          breathMats.push(disk.material as THREE.MeshStandardMaterial);
+          breathLights.push(pl);
+        }
         pl.position.copy(disk.position).add(new THREE.Vector3(0, -0.08, 0));
         pl.castShadow = true;
         pl.shadow.mapSize.set(1024, 1024);
         pl.shadow.bias = -0.004;
         g.add(pl);
+        if (xmas) {
+          // 光晕：径向渐变 sprite 随呼吸缩放/透明度脉动，增强炫彩氛围
+          const gc = document.createElement('canvas');
+          gc.width = gc.height = 128;
+          const gx = gc.getContext('2d')!;
+          const grad = gx.createRadialGradient(64, 64, 0, 64, 64, 64);
+          grad.addColorStop(0, 'rgba(255, 214, 160, 0.9)');
+          grad.addColorStop(0.4, 'rgba(255, 190, 120, 0.35)');
+          grad.addColorStop(1, 'rgba(255, 190, 120, 0)');
+          gx.fillStyle = grad;
+          gx.fillRect(0, 0, 128, 128);
+          const glow = new THREE.Sprite(new THREE.SpriteMaterial({
+            map: new THREE.CanvasTexture(gc),
+            transparent: true,
+            depthWrite: false,
+            blending: THREE.AdditiveBlending,
+          }));
+          const gs = rm * 4;
+          glow.scale.set(gs, gs, 1);
+          glow.position.copy(disk.position);
+          g.add(glow);
+          breathSprites.push({ sprite: glow, base: gs });
+        }
         const lb = makeLabel(d.name);
         lb.position.set(wx(p.x), wy(elev) - 0.16, wz(p.y));
         g.add(lb);
@@ -461,15 +517,41 @@ function RoomScene3D({ room }: { room: Room }) {
         const pts = p.points.map((pt) => new THREE.Vector3(wx(pt.x), wy(elev), wz(pt.y)));
         // 贴墙灯带保持折线段的直线形态（不做样条平滑，直角弯不得鼓弧）；
         // 拐角放同材质小球衔接相邻管段，盖住圆截面交叉缺口与法线跳变，视觉仍是连续平滑光带
+        const ambStrip = ambiance === 'christmas' ? XMAS_STRIPS[stripSeen % XMAS_STRIPS.length] : null;
+        stripSeen += 1;
         const segMat = stdMat({
-          color: 0xd8ccff,
-          emissive: 0x8b5cf6,
-          emissiveIntensity: 2.2,
+          color: ambStrip ? 0xf3e8ff : 0xd8ccff,
+          emissive: ambStrip ? ambStrip.glow : 0x8b5cf6,
+          emissiveIntensity: ambStrip ? 2.4 : 2.2, // 氛围下为流水波基线，子段 clone 后逐帧波动
           roughness: 0.5,
         });
         const ballGeo = new THREE.SphereGeometry(0.022, 12, 8);
+        // 圣诞氛围下按 ≈0.45m 子段化，每子段独立材质做沿带流水波；平时整段一根管（保持直线、拐角球衔接不变）
+        let totalLen = 0;
+        for (let j = 0; j < pts.length - 1; j++) totalLen += pts[j].distanceTo(pts[j + 1]);
+        let accLen = 0;
         for (let j = 0; j < pts.length - 1; j++) {
-          g.add(new THREE.Mesh(new THREE.TubeGeometry(new THREE.LineCurve3(pts[j], pts[j + 1]), 8, 0.022, 10, false), segMat));
+          const a = pts[j];
+          const b = pts[j + 1];
+          const segLen = a.distanceTo(b);
+          if (!ambStrip) {
+            g.add(new THREE.Mesh(new THREE.TubeGeometry(new THREE.LineCurve3(a, b), 8, 0.022, 10, false), segMat));
+            accLen += segLen;
+            continue;
+          }
+          const n = Math.max(1, Math.round(segLen / 0.45));
+          for (let k = 0; k < n; k++) {
+            const m = segMat.clone();
+            flowMats.push({ mat: m, t0: (accLen + (k + 0.5) * (segLen / n)) / totalLen });
+            g.add(new THREE.Mesh(
+              new THREE.TubeGeometry(
+                new THREE.LineCurve3(a.clone().lerp(b, k / n), a.clone().lerp(b, (k + 1) / n)),
+                4, 0.022, 10, false,
+              ),
+              m,
+            ));
+          }
+          accLen += segLen;
         }
         for (let j = 1; j < pts.length - 1; j++) {
           const ball = new THREE.Mesh(ballGeo, segMat);
@@ -478,6 +560,7 @@ function RoomScene3D({ room }: { room: Room }) {
         }
         // 线光源：每段一个 RectAreaLight（宽=段长、高=0.04 细缝，单面发光）
         // 踢脚带（elev<50）光朝房间内侧、灯槽（elev>=50）朝下偏内洗墙；强度为经验值可调
+        let lacc = 0; // 段起点累计长：光源色相随带位置流动，与子段同频
         for (let j = 0; j < pts.length - 1; j++) {
           const a = pts[j];
           const b = pts[j + 1];
@@ -490,10 +573,12 @@ function RoomScene3D({ room }: { room: Room }) {
           const aim = elev >= 50
             ? down.clone().addScaledVector(horiz, 0.45).normalize()
             : horiz.clone().addScaledVector(down, 0.3).normalize();
-          const rl = new THREE.RectAreaLight(0xa78bfa, 30, len, 0.04);
+          const rl = new THREE.RectAreaLight(ambStrip ? ambStrip.beam : 0xa78bfa, ambStrip ? 34 : 30, len, 0.04);
           rl.position.copy(mid);
           rl.lookAt(mid.clone().add(aim));
           g.add(rl);
+          if (ambStrip) flowLights.push({ light: rl, t0: (lacc + len / 2) / totalLen });
+          lacc += len;
         }
         let li = 0;
         for (let j = 1; j < pts.length - 1; j++) {
@@ -536,9 +621,33 @@ function RoomScene3D({ room }: { room: Room }) {
     });
     ro.observe(mount);
 
+    // 动态灯效：灯带彩虹光谱沿带流动（色相+亮度双波）、洗墙光斑同步变色、吸顶灯呼吸光晕
+    const clock = new THREE.Clock();
     let raf = 0;
     const loop = () => {
       controls.update();
+      if (ambiance === 'christmas') {
+        clock.getDelta();
+        const t = clock.elapsedTime;
+        for (const f of flowMats) {
+          const hue = (f.t0 * 0.25 + t * 0.05) % 1;
+          f.mat.emissive.setHSL(hue, 0.9, 0.55);
+          f.mat.color.setHSL(hue, 0.9, 0.16);
+          f.mat.emissiveIntensity = 2.6 + 1.3 * Math.sin(f.t0 * 9 - t * 2.4);
+        }
+        for (const fl of flowLights) {
+          fl.light.color.setHSL((fl.t0 * 0.25 + t * 0.05) % 1, 0.85, 0.6);
+          fl.light.intensity = 34 + 8 * Math.sin(fl.t0 * 9 - t * 2.4);
+        }
+        const br = Math.sin(t * 0.9);
+        for (const m of breathMats) m.emissiveIntensity = 2.4 + 0.5 * br;
+        for (const l of breathLights) l.intensity = 13 + 2.5 * br;
+        for (const s of breathSprites) {
+          const k = s.base * (1 + 0.09 * br);
+          s.sprite.scale.set(k, k, 1);
+          (s.sprite.material as THREE.SpriteMaterial).opacity = 0.7 + 0.25 * br;
+        }
+      }
       renderer.render(scene, camera);
       raf = requestAnimationFrame(loop);
     };
@@ -564,21 +673,36 @@ function RoomScene3D({ room }: { room: Room }) {
       renderer.dispose();
       if (renderer.domElement.parentElement === mount) mount.removeChild(renderer.domElement);
     };
-  }, [room]);
+  }, [room, ambiance]);
 
   return (
     <div ref={mountRef} className={styles.scene}>
+      {ambiance === 'christmas' && (
+        <div className={styles.ambPanel}>
+          <div className={styles.ambPanelTitle}>圣诞氛围 · 炫彩流水灯效（未下发真机）</div>
+          <pre className={styles.ambCmds}>{xmasCmds}</pre>
+        </div>
+      )}
       <div className={styles.sceneToolbar}>
         <span className={styles.sceneHint}>左键拖拽旋转 · 右键拖动平移 · 滚轮缩放 · 双击复位</span>
         <span>{toM(shape.w)}m × {toM(shape.depth)}m × {toM(shape.h)}m</span>
-        <button
-          type="button"
-          className={styles.viewResetBtn}
-          onClick={() => controlsRef.current?.reset()}
-          title="恢复默认视角"
-        >
-          复位视角
-        </button>
+        <span className={styles.sceneToolbarBtns}>
+          <button
+            type="button"
+            className={`${styles.viewResetBtn} ${ambiance === 'christmas' ? styles.ambBtnActive : ''}`}
+            onClick={() => setAmbiance(ambiance === 'christmas' ? null : 'christmas')}
+          >
+            {ambiance === 'christmas' ? '退出圣诞氛围' : '圣诞氛围'}
+          </button>
+          <button
+            type="button"
+            className={styles.viewResetBtn}
+            onClick={() => controlsRef.current?.reset()}
+            title="恢复默认视角"
+          >
+            复位视角
+          </button>
+        </span>
       </div>
     </div>
   );
