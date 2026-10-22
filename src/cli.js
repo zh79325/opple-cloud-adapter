@@ -9,7 +9,8 @@ const HELP = `opple — 欧享家（欧普 INNO）本地终端控制
   token save <token> <projectCode>   保存凭据到 ~/.opple-cli.json
   token check                        校验/刷新 token
   homes                              家庭列表
-  devices                            设备列表（含房间、在线状态、品类）
+  tree                               家庭 → 房间 → 设备 三层结构树
+  devices [房间名|Gpno]              设备列表（可按房间过滤）
   actions <vDeviceId>                查询某设备可用动作
   call <vDeviceId> <actionId> [k=v…] 调用设备动作
     例: opple call 2112849 1 value=1
@@ -68,15 +69,44 @@ export async function run(argv) {
     return;
   }
 
-  if (cmd === 'devices') {
+  if (cmd === 'tree') {
     const c = getClient();
-    const devices = await c.listDevices();
-    const rows = devices.map(d => [
-      d.VDeviceId, d.DeviceName, d.AreaName ?? '-', d.ClassSkuName ?? d.ClassSku,
-      d.IsOnline ? '在线' : '离线', d.ParentVDeviceId ?? '-',
-    ]);
-    printTable(rows, ['VDeviceId', '名称', '房间', '品类', '状态', '父设备']);
-    console.log(`\n共 ${devices.length} 台设备`);
+    const homes = await c.tree();
+    for (const home of homes) {
+      const on = home.onlineCount != null ? `（在线 ${home.onlineCount}/${home.deviceCount}）` : '';
+      console.log(`\n🏠 ${home.name} [${home.projectCode}]${on}`);
+      for (const room of home.rooms) {
+        console.log(`  🛏  ${room.name}（${room.devices.length} 台设备）`);
+        for (const d of room.devices) {
+          const flag = d.online ? '●' : '○';
+          const parent = d.parent && d.parent !== d.vDeviceId ? ` ← ${d.parent}` : '';
+          console.log(`      ${flag} ${d.name}  [${d.vDeviceId}] ${d.type ?? ''}${d.protocol ? ` (${d.protocol})` : ''}${parent}`);
+        }
+      }
+    }
+    if (!homes.length) console.log('（无家庭）');
+    return;
+  }
+
+  if (cmd === 'devices') {
+    const filter = rest[0]; // 可选：房间名或 Gpno
+    const c = getClient();
+    const homes = await c.tree();
+    const rows = [];
+    for (const home of homes) {
+      for (const room of home.rooms) {
+        if (filter && room.name !== filter && String(room.gpno) !== filter) continue;
+        for (const d of room.devices) {
+          rows.push([d.vDeviceId, d.name, home.name, room.name, d.type ?? '-', d.online ? '在线' : '离线']);
+        }
+      }
+    }
+    if (filter && !rows.length) {
+      console.log(`没有匹配房间: ${filter}（先运行 opple tree 查看房间列表）`);
+      return;
+    }
+    printTable(rows, ['VDeviceId', '名称', '家庭', '房间', '品类', '状态']);
+    console.log(`\n共 ${rows.length} 台设备`);
     return;
   }
 

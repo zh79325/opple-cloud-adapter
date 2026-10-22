@@ -108,14 +108,14 @@ export class OppleClient {
     return json;
   }
 
-  /** 设备列表（分页全量） */
-  async listDevices() {
-    // App 首次拉取用 gpNo=-1 childCategoryType=1，之后逐级；CLI 直接全量分页
+  /** 设备列表（分页全量；gpNo 指定房间时返回该房间设备） */
+  async listDevices(gpNo = -1) {
+    // App 首次拉取用 gpNo=-1 childCategoryType=1（仅网关/根设备）；指定房间 Gpno 时返回房间全部设备
     const all = [];
     let pageIndex = 1;
     for (;;) {
       const page = await this.get('/api/Device/FindDeviceListByPage', {
-        gpNo: -1, childCategoryType: 1, PageIndex: pageIndex, PageSize: 100,
+        gpNo, childCategoryType: 1, PageIndex: pageIndex, PageSize: 100,
       });
       const list = page?.RecordList ?? [];
       all.push(...list);
@@ -142,6 +142,55 @@ export class OppleClient {
 
   /** 家庭列表 */
   async homeList() {
-    return this.get('/api/Project/GetHomeList');
+    const r = await this.get('/api/Project/GetHomeList', { inviteStatus: '0,1,3', pageIndex: 1, pageSize: 8888 });
+    return r?.RecordList ?? r;
+  }
+
+  /**
+   * 家庭 → 房间 → 设备 三层树。
+   * 房间通过 gpNo 逐级下钻（App 用 childCategoryType=2 查子设备）。
+   */
+  async tree() {
+    const homes = await this.homeList();
+    const out = [];
+    for (const home of homes) {
+      if (home.IsArchive) continue;
+      // 切换到该家庭的 projectcode 上下文
+      const saved = this.projectCode;
+      this.projectCode = home.ProjectCode;
+      try {
+        // 房间列表（version=2 返回 Gpno/GpName/DeviceCount/Childs）
+        const rooms = await this.get('/businessapi/Room/FindUserRoomList', { version: 2 }).catch(() => []);
+        const roomList = Array.isArray(rooms) ? rooms : [];
+        // 每个房间下钻设备（gpNo=房间 Gpno，childCategoryType=1 含子设备）
+        const roomsOut = [];
+        for (const room of roomList) {
+          const devices = await this.listDevices(room.Gpno).catch(() => []);
+          roomsOut.push({
+            gpno: room.Gpno,
+            name: room.GpName ?? room.Name,
+            deviceCount: room.DeviceCount,
+            devices: devices.map(d => ({
+              vDeviceId: d.VDeviceId,
+              name: d.DeviceName,
+              type: d.ClassSkuName ?? d.ClassSku,
+              protocol: d.ProtocolTypeName,
+              online: d.IsOnline,
+              parent: d.ParentVDeviceId ?? null,
+            })),
+          });
+        }
+        out.push({
+          projectCode: home.ProjectCode,
+          name: home.ProjectName,
+          deviceCount: home.DeviceCount,
+          onlineCount: home.OnlineCount ?? null,
+          rooms: roomsOut,
+        });
+      } finally {
+        this.projectCode = saved;
+      }
+    }
+    return out;
   }
 }
