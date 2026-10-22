@@ -3,11 +3,11 @@ schema_version: 1
 locale: zh-CN
 branch: main
 nodes_managed: true
-exported_at: "2026-10-22T07:11:13Z"
+exported_at: "2026-10-22T10:15:38Z"
 modules:
     "":
-        dir_name: 欧享家云端控制单仓（CLI + Web 控制台）
-        title: 欧享家云端控制单仓（CLI + Web 控制台）
+        dir_name: 欧享家云端控制平台（CLI + Web 控制台）
+        title: 欧享家云端控制平台（CLI + Web 控制台）
         scope:
             - README.md
             - package.json
@@ -30,8 +30,8 @@ modules:
         related_to:
             - path: web_dashboard
     web_dashboard:
-        dir_name: 欧享家家庭设备管理控制台（Web 前端）
-        title: 欧享家家庭设备管理控制台（Web 前端）
+        dir_name: 欧享家本地 Web 控制台（Ice.js + React + Three.js）
+        title: 欧享家本地 Web 控制台（Ice.js + React + Three.js）
         scope:
             - web/
         source_files: []

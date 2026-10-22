@@ -888,39 +888,33 @@ function RoomEditor({ room, projectCode, onSaved, onShapeSaved, onDone }: {
   // 高度口径：UI 以“距顶”呈现（0 = 贴顶，越大越靠近地面）；存储 elev 仍为离地百分比
   const elevLabel = (e: number) => `距顶 ${toM(100 - e)}m`;
 
-  // 尺寸行：滑杆 + 米数输入框（双输入，拖动粗调、键入精调）
+  // 尺寸行：米数输入框（拖手柄粗调之外的第二通道，键入精调）
   const sizeRow = (label: string, units: number, min: number, max: number, onChange: (v: number) => void) => (
     <label key={label} className={styles.panelRow}>
       <span className={styles.panelLabel}>{label}</span>
-      <input className={styles.range} type="range" min={min} max={max} value={clamp(units, min, max)}
-        onChange={(e) => onChange(Number(e.target.value))} />
       <NumField value={Number((units * UNIT).toFixed(1))} min={min * UNIT} max={max * UNIT}
         onCommit={(m) => onChange(clamp(m / UNIT, min, max))} />
     </label>
   );
 
-  // 半径行：仅吸顶灯，滑杆/数字输入双维护（米）；min/max 与 2D 手柄、3D 渲染一致
+  // 半径行：仅吸顶灯，数字输入维护（米）；min/max 与 2D 手柄、3D 渲染一致
   const radiusRow = (d: Device) => {
     if (d.position?.kind !== 'circle') return null;
     return (
       <label key={`${d.vDeviceId}-r`} className={styles.panelRow} title={`${d.name} · 半径`}>
-        <span className={styles.panelLabel}>半径</span>
-        <input className={styles.range} type="range" min={3} max={30} value={clamp(d.position.r, 3, 30)}
-          onChange={(e) => setR(d.vDeviceId, Number(e.target.value))} />
+        <span className={`${styles.panelLabel} ${styles.panelSubLabel}`}>└ 半径</span>
         <NumField value={Number((d.position.r * UNIT).toFixed(1))} min={3 * UNIT} max={30 * UNIT}
           onCommit={(m) => setR(d.vDeviceId, clamp(m / UNIT, 3, 30))} />
       </label>
     );
   };
 
-  // 安装高度行：滑杆值为“距顶百分比”，输入框为距顶米数
+  // 安装高度行：输入框为距顶米数（存储 elev 仍为离地百分比）
   const elevRow = (d: Device) => {
     const drop = 100 - (d.position?.elev ?? 0);
     return (
       <label key={d.vDeviceId} className={styles.panelRow} title={d.name}>
         <span className={styles.panelLabel}>{d.name}</span>
-        <input className={styles.range} type="range" min={0} max={100} value={drop}
-          onChange={(e) => setElev(d.vDeviceId, 100 - Number(e.target.value))} />
         <NumField value={Number((drop * UNIT).toFixed(1))} min={0} max={100 * UNIT}
           onCommit={(m) => setElev(d.vDeviceId, 100 - clamp(m / UNIT, 0, 100))} />
       </label>

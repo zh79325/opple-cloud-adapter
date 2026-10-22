@@ -811,9 +811,20 @@
   white-space: nowrap;
 }
 
-/* 数字输入框（米数精调，与滑杆双输入） */
+/* 设备子属性行标签（如吸顶灯的「└ 半径」）：缩进表达从属于上方设备行 */
+.panelSubLabel {
+  padding-left: 14px;
+  color: var(--text-3);
+}
+
+/* 无滑杆的面板行：输入框推到行尾对齐 */
+.panelRow .numInput:last-child {
+  margin-left: auto;
+}
+
+/* 数字输入框（米数精调；滑杆已移除，加宽为面板主要数值输入） */
 .numInput {
-  width: 58px;
+  width: 110px;
   flex: none;
   padding: 4px 6px;
   border-radius: 8px;
@@ -864,13 +875,6 @@
 
 .deviceItemExcluded .excludeBtn {
   color: #f87171;
-}
-
-.range {
-  flex: 1;
-  min-width: 0;
-  accent-color: #818cf8;
-  cursor: pointer;
 }
 
 .panelEmpty {
