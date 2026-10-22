@@ -67,10 +67,55 @@ client-up-time: <毫秒时间戳>
 ## 6. 设备控制指令（核心发现）
 
 **`GET /api/Device/CallAction`** ——所有设备动作统一走这个接口（发现于行 550037）：
-- 入参包含 VDeviceId/DeviceId + ActionId/参数，具体 action 枚举由 `FindActionAbility` 系列接口查询：
-  - `/api/Device/FindActionAbilityByVDeviceId`（按设备查可用动作）
-  - `/api/Device/FindActionAbility`、`FindActionAbilityWithStatus`
-- 灯光控制相关辅助接口：`/api/Area/AdjustBright`、`AdjustCCT`、`AdjustColor`、`StepDimming`、`StepAdjustCCT`、`/api/area/GroupControl`
+- 参数：`vDeviceId` + `msgType`（命令字）+ `channelId=65535` + `values`（按 `FindDeviceAbility` 返回的 `Values[].KeyId` 升序逗号拼接）
+- 实测样例（来自 2026-10-22 11:44 抓包）：
+  - 开关灯带亮度：`msgType=0x03130000&values=178`
+  - 调色温：`msgType=0x031B0000&values=8300`（8300K）
+  - 调颜色：`msgType=0x046B0000&values=0,276303529`（回路号,CXCY 打包值）
+
+### 6.1 灯光命令字表（来自 FindDeviceAbility 实测响应）
+
+| msgType | 功能 | 参数范围 |
+|---|---|---|
+| 0x03110000 | 开关 | 0/1 |
+| 0x03130000 | 亮度（无级） | 1-255 |
+| 0x031B0000 | 色温（无级，SDL 灯为 1800-12000K） | 开尔文值 |
+| 0x14170000 | DUV | -8~8（带回路号前缀） |
+| 0x046B0000 | 颜色（CXCY） | 回路,32位打包值 |
+| 0x046F0000 | 日光/光模式预设 | 回路,预设枚举值 |
+| 0x14190000 | 天际模式（蓝天/晨光/暮霞…） | 回路,模式枚举 |
+| 0x03840000 / 0x03880000 | 分级调亮度/调色温 | 步进 |
+
+### 6.2 CXCY 颜色编码（已验证）
+
+32 位打包：**高 16 位 = cx×10000，低 16 位 = cy×10000**。
+- 彩光：藤萝紫 207948282 = (0.3173, 0.2554)，竹影绿 242749551 = (0.3704, 0.4207)
+- 日光模式预设例外：高 16 位直接放**色温 K**（晨曦=0x0BB8=3000K，明月=0x2710=10000K），低 16 位为附加参数
+- CLI 已实现 `#RRGGBB → xy → CXCY` 自动转换（sRGB→XYZ→归一化投影）
+
+### 6.3 悦动灯效命令（灯带类设备，0x14 系列）
+
+| msgType | 效果 | values 参数序（回路=0 开头） |
+|---|---|---|
+| 0x14030000 | 流水 | 回路,模式0,颜色,速度(1-100),循环(0/1) |
+| 0x14050000 | 跑马 | 回路,模式1,颜色,速度,方向(正向0/逆向1) |
+| 0x14070000 | 呼吸 | 回路,模式2,颜色,速度 |
+| 0x14090000 | 律动 | 回路,模式3,颜色,速度 |
+| 0x140B0000 | 静态色温渐变 | 回路,模式4,起始色温,结束色温,方向 |
+| 0x140D0000 | 动态色温渐变 | 回路,模式5,起始色温,结束色温,渐变时长(1-10) |
+| 0x140F0000 | 静态颜色渐变 | 回路,模式6,颜色,方向 |
+
+共享颜色枚举（CXCY 多选）：星云/梦幻/火烧云/加州阳光/晚霞/睡莲等。
+
+### 6.4 局域网直控通道（重要架构发现）
+
+`sendDeviceControl`（源码行 554920）在设备同网段时走 **UDP 直发**（`iotctrl.opple.com`/网关 IP，端口 65501，`OPIOTIPPort`），绕过云端——这是第一次抓包抓不到控制指令的原因。云端 `CallAction` 是远程/兜底通道，两者参数结构一致（LAN 控制 msgType/data 由 App 内部序列化，若需要本地毫秒级控制可后续逆向该 UDP 协议）。
+
+### 6.5 房间批量控制
+
+- `GET /api/Area/AdjustBright?gpNo=<房间>&bright=<1-255>`（实测 198）
+- `GET /api/Area/AdjustCCT?gpNo=<房间>&temperature=<K>`（实测 8195、10894）
+- 另有 `/api/Area/AdjustColor`、`AdjustByTemplate`、`/api/area/GroupControl`
 
 **全部 552 个接口路径已导出**：`data/api_paths.txt`
 

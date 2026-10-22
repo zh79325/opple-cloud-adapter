@@ -132,12 +132,24 @@ export class OppleClient {
 
   /** 查询设备可用动作（统一模型的"动作"来源） */
   async actionAbility(vDeviceId) {
-    return this.get('/api/Device/FindActionAbilityByVDeviceId', { vDeviceId, t: Date.now() });
+    return this.get('/api/Device/FindDeviceAbilityByVDeviceId', { vDeviceId, t: Date.now() });
   }
 
-  /** 调用设备动作（核心控制指令） */
-  async callAction(params) {
-    return this.get('/api/Device/CallAction', params);
+  /**
+   * 调用设备动作（核心控制指令）。
+   * values 按 FindDeviceAbility 返回的 Values[].KeyId 升序逗号拼接。
+   * @param {string} vDeviceId
+   * @param {string} msgType 命令字，如 '0x03130000'
+   * @param {Array<string|number>} values 参数列表（按 KeyId 排序）
+   * @param {number} [channelId=65535]
+   */
+  async callAction(vDeviceId, msgType, values, channelId = 65535) {
+    return this.get('/api/Device/CallAction', {
+      vDeviceId,
+      msgType,
+      channelId,
+      values: values.join(','),
+    });
   }
 
   /** 家庭列表 */
