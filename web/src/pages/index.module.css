@@ -689,6 +689,25 @@
   color: #818cf8;
 }
 
+/* 复位视角按钮（工具条整体不拦截拖拽，仅按钮可点） */
+.viewResetBtn {
+  pointer-events: auto;
+  margin-left: 12px;
+  padding: 4px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(129, 140, 248, 0.12);
+  color: var(--text-2);
+  font-size: 12px;
+  cursor: pointer;
+  transition: color 0.18s ease, background 0.18s ease;
+}
+
+.viewResetBtn:hover {
+  color: var(--text-1);
+  background: rgba(129, 140, 248, 0.28);
+}
+
 /* ========== 二维编辑器 ========== */
 .editorLayout {
   display: grid;
@@ -744,7 +763,26 @@
 }
 
 .handle {
+  cursor: grab;
+}
+
+.handle:active {
+  cursor: grabbing;
+}
+
+/* 吸顶灯半径调整手柄（覆盖顶点拖动光标） */
+.handleResize {
   cursor: nwse-resize;
+}
+
+/* 灯带段中点插入手柄（虚线小圈，拖动即加顶点弯折） */
+.handleMid {
+  cursor: copy;
+  transition: fill 0.15s ease;
+}
+
+.handleMid:hover {
+  fill: rgba(167, 139, 250, 0.65);
 }
 
 .editorHint {

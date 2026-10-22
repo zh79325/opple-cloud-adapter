@@ -6,14 +6,15 @@ export const pageConfig = () => ({
 });
 
 /**
- * 几何模型 V3（3D 完整空间语义，全部为房间尺寸百分比 0-100）：
+ * 几何模型 V4（3D 完整空间语义，全部为房间尺寸百分比 0-100）：
  * 房间：{ w, h, depth } —— 宽/高/深（h 为高度，决定房间盒子比例）
  * - 吸顶灯（圆盘面光源）：{ kind: 'circle', x, y, r, elev } —— x/y 平面位置、r 半径、elev 悬吊高度（0=地，100=天花）
- * - 灯带（长条）：{ kind: 'segment', x1, y1, x2, y2, elev } —— 平面走向 + elev 安装高度（踢脚线≈10，顶棚≈95）
+ * - 灯带（可弯折软带）：{ kind: 'segment', points: [{x,y},...], elev } —— 平面路径（折线，≥2 顶点）+ elev 安装高度（踢脚线≈10，顶棚≈95）
  * - 网关/插座：{ kind: 'point', x, y, elev } —— elev≈0 地面，≈30 墙面
  */
+interface PathPoint { x: number; y: number }
 interface CirclePos { kind: 'circle'; x: number; y: number; r: number; elev?: number; name?: string }
-interface SegmentPos { kind: 'segment'; x1: number; y1: number; x2: number; y2: number; elev?: number; name?: string }
+interface SegmentPos { kind: 'segment'; points: PathPoint[]; elev?: number; name?: string }
 interface PointPos { kind: 'point'; x: number; y: number; elev?: number; name?: string }
 type Pos = CirclePos | SegmentPos | PointPos;
 
@@ -92,18 +93,31 @@ async function api(path: string, init?: RequestInit) {
   return j;
 }
 
-// 默认布局：灯带贴四面墙 elev=10，吸顶灯居中 elev=95，网关 elev=0
-const WALLS = [
-  { x1: 10, y1: 15, x2: 10, y2: 85 },
-  { x1: 90, y1: 15, x2: 90, y2: 85 },
-  { x1: 15, y1: 10, x2: 85, y2: 10 },
-  { x1: 15, y1: 90, x2: 85, y2: 90 },
+// 默认布局：灯带贴四面墙 elev=10（两点起步，可在编辑器中弯折），吸顶灯居中 elev=95，网关 elev=0
+const WALLS: PathPoint[][] = [
+  [{ x: 10, y: 15 }, { x: 10, y: 85 }],
+  [{ x: 90, y: 15 }, { x: 90, y: 85 }],
+  [{ x: 15, y: 10 }, { x: 85, y: 10 }],
+  [{ x: 15, y: 90 }, { x: 85, y: 90 }],
 ];
+
+/** 旧格式（x1,y1,x2,y2 两点直线）→ 新格式 points 折线；其余原样返回 */
+function normalizePos(p: Pos | null): Pos | null {
+  if (p && p.kind === 'segment' && !Array.isArray((p as SegmentPos).points)) {
+    const old = p as unknown as { x1: number; y1: number; x2: number; y2: number; elev?: number };
+    return {
+      kind: 'segment',
+      points: [{ x: old.x1, y: old.y1 }, { x: old.x2, y: old.y2 }],
+      elev: old.elev,
+    };
+  }
+  return p;
+}
 
 function defaultPos(d: Device, i: number, devices: Device[]): Pos {
   if (isStrip(d)) {
     const stripsBefore = devices.slice(0, i).filter(isStrip).length;
-    return { kind: 'segment', ...WALLS[stripsBefore % WALLS.length], elev: 10 };
+    return { kind: 'segment', points: WALLS[stripsBefore % WALLS.length].map((pt) => ({ ...pt })), elev: 10 };
   }
   if (isCeiling(d)) {
     const ceilings = devices.map((x, idx) => (isCeiling(x) ? idx : -1)).filter((v) => v >= 0);
@@ -217,8 +231,9 @@ function MiniPlan({ room }: { room: Room }) {
         const p = d.position ?? defaultPos(d, i, positioned);
         if (p.kind === 'segment') {
           return (
-            <line key={d.vDeviceId} x1={p.x1} y1={(p.y1 / 100) * vh} x2={p.x2} y2={(p.y2 / 100) * vh}
-              strokeWidth={2.6} strokeLinecap="round"
+            <polyline key={d.vDeviceId}
+              points={p.points.map((pt) => `${pt.x},${(pt.y / 100) * vh}`).join(' ')}
+              fill="none" strokeWidth={2.6} strokeLinecap="round" strokeLinejoin="round"
               className={d.online ? styles.miniSegOn : styles.miniSegOff} />
           );
         }
@@ -300,9 +315,14 @@ function HomeView({ home, onOpenRoom }: { home: Home | undefined; onOpenRoom: (g
 // ---- 3D 预览：CSS 3D 房间盒子，支持拖拽旋转 / 滚轮缩放 ----
 function RoomScene3D({ room }: { room: Room }) {
   const { shape } = room;
-  const [rot, setRot] = useState({ x: 56, y: -26 });
+  const DEFAULT_ROT = { x: 56, y: -26 };
+  const [rot, setRot] = useState(DEFAULT_ROT);
+  const [pan, setPan] = useState({ x: 0, y: 0 });
   const [zoom, setZoom] = useState(1);
-  const dragRef = useRef<{ px: number; py: number; rx: number; ry: number } | null>(null);
+  const dragRef = useRef<{
+    px: number; py: number; rx: number; ry: number; panX: number; panY: number;
+    mode: 'rotate' | 'pan';
+  } | null>(null);
   const sceneRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -330,21 +350,33 @@ function RoomScene3D({ room }: { room: Room }) {
       ref={sceneRef}
       className={styles.scene}
       onPointerDown={(e) => {
-        dragRef.current = { px: e.clientX, py: e.clientY, rx: rot.x, ry: rot.y };
+        // 左键拖拽旋转；右键（或 Ctrl/Cmd+左键）拖拽平移
+        const mode: 'rotate' | 'pan' = e.button === 2 || e.ctrlKey || e.metaKey ? 'pan' : 'rotate';
+        dragRef.current = { px: e.clientX, py: e.clientY, rx: rot.x, ry: rot.y, panX: pan.x, panY: pan.y, mode };
         (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
       }}
       onPointerMove={(e) => {
         const d = dragRef.current;
         if (!d) return;
+        if (d.mode === 'pan') {
+          setPan({ x: d.panX + (e.clientX - d.px), y: d.panY + (e.clientY - d.py) });
+          return;
+        }
         setRot({
-          x: clamp(d.rx - (e.clientY - d.py) * 0.22, 14, 86),
-          y: clamp(d.ry + (e.clientX - d.px) * 0.28, -88, 88),
+          // 俯仰近乎全向（可从正上方转到正下方仰视地面），水平环视不限圈数
+          x: clamp(d.rx - (e.clientY - d.py) * 0.22, -88, 88),
+          y: d.ry + (e.clientX - d.px) * 0.28,
         });
       }}
       onPointerUp={() => { dragRef.current = null; }}
       onPointerLeave={() => { dragRef.current = null; }}
+      onContextMenu={(e) => e.preventDefault()}
+      onDoubleClick={() => { setRot(DEFAULT_ROT); setPan({ x: 0, y: 0 }); setZoom(1); }}
     >
-      <div className={styles.sceneStage} style={{ perspective: 1500 }}>
+      <div
+        className={styles.sceneStage}
+        style={{ perspective: 1500, transform: `translate(${pan.x}px, ${pan.y}px)` }}
+      >
         <div className={styles.roomBoxWrap} style={{ transform: `translateY(${Math.round(H * 0.5)}px)` }}>
         <div
           className={styles.roomBox}
@@ -380,22 +412,37 @@ function RoomScene3D({ room }: { room: Room }) {
             }
 
             if (p.kind === 'segment') {
-              const dx = px(p.x2) - px(p.x1);
-              const dz = pz(p.y2) - pz(p.y1);
-              const len = Math.sqrt(dx * dx + dz * dz);
-              const angle = Math.atan2(dz, dx) * (180 / Math.PI);
-              const midX = (px(p.x1) + px(p.x2)) / 2;
-              const midZ = (pz(p.y1) + pz(p.y2)) / 2;
-              return (
-                <div key={d.vDeviceId}
-                  className={`${styles.obj3d} ${d.online ? styles.strip3D : styles.objOff}`}
+              // 软带路径：相邻顶点逐段渲染为发光长条（与 2D 编辑的折线路径一一对应）
+              const pts = p.points;
+              const segs = pts.slice(0, -1).map((a, idx) => {
+                const b = pts[idx + 1];
+                const dx = px(b.x) - px(a.x);
+                const dz = pz(b.y) - pz(a.y);
+                return {
+                  midX: (px(a.x) + px(b.x)) / 2,
+                  midZ: (pz(a.y) + pz(b.y)) / 2,
+                  len: Math.max(2, Math.sqrt(dx * dx + dz * dz)),
+                  angle: Math.atan2(dz, dx) * (180 / Math.PI),
+                };
+              });
+              const li = segs.reduce((best, s, idx) => (s.len > segs[best].len ? idx : best), 0);
+              const stripCls = d.online ? styles.strip3D : styles.objOff;
+              return [
+                ...segs.map((s, idx) => (
+                  <div key={`${d.vDeviceId}-s${idx}`} className={`${styles.obj3d} ${stripCls}`}
+                    style={{
+                      width: s.len, height: 12, borderRadius: 999,
+                      transform: `translate(-50%,-50%) translate3d(${s.midX}px, ${pe(elev)}px, ${s.midZ}px) rotateX(90deg) rotateZ(${-s.angle}deg)`,
+                    }} />
+                )),
+                // 设备标签叠在最长段上（与灯带同平面，文字跟随段方向）
+                <div key={`${d.vDeviceId}-lb`} className={styles.obj3d}
                   style={{
-                    width: len, height: 12, borderRadius: 999,
-                    transform: `translate(-50%,-50%) translate3d(${midX}px, ${pe(elev)}px, ${midZ}px) rotateX(90deg) rotateZ(${-angle}deg)`,
+                    transform: `translate(-50%,-50%) translate3d(${segs[li].midX}px, ${pe(elev)}px, ${segs[li].midZ}px) rotateX(90deg) rotateZ(${-segs[li].angle}deg)`,
                   }}>
                   <span className={styles.label3D}>{d.name}</span>
-                </div>
-              );
+                </div>,
+              ];
             }
 
             return null;
@@ -404,8 +451,16 @@ function RoomScene3D({ room }: { room: Room }) {
         </div>
       </div>
       <div className={styles.sceneToolbar}>
-        <span className={styles.sceneHint}>拖拽旋转 · 滚轮缩放</span>
+        <span className={styles.sceneHint}>左键拖拽旋转 · 右键拖动平移 · 滚轮缩放 · 双击复位</span>
         <span>{toM(shape.w)}m × {toM(shape.depth)}m × {toM(shape.h)}m</span>
+        <button
+          type="button"
+          className={styles.viewResetBtn}
+          onClick={() => { setRot(DEFAULT_ROT); setPan({ x: 0, y: 0 }); setZoom(1); }}
+          title="恢复默认视角"
+        >
+          复位视角
+        </button>
       </div>
     </div>
   );
@@ -423,7 +478,7 @@ function RoomEditor({ room, projectCode, onSaved, onShapeSaved, onDone }: {
   const [shape, setShape] = useState<RoomShape>(room.shape);
   const [dirty, setDirty] = useState(false);
   const svgRef = useRef<SVGSVGElement | null>(null);
-  const drag = useRef<{ id: string; part: 'body' | 'p1' | 'p2' | 'resize'; grabPx: { x: number; y: number }; grabPos: Pos } | null>(null);
+  const drag = useRef<{ id: string; part: string; grabPx: { x: number; y: number }; grabPos: Pos } | null>(null);
 
   useEffect(() => {
     // 仅参与空间模型的灯具参与布局编辑；网关等点位与手动排除的设备不占位
@@ -451,7 +506,7 @@ function RoomEditor({ room, projectCode, onSaved, onShapeSaved, onDone }: {
     };
   };
 
-  const onPointerDown = (e: React.PointerEvent, d: Device, part: 'body' | 'p1' | 'p2' | 'resize') => {
+  const onPointerDown = (e: React.PointerEvent, d: Device, part: string) => {
     e.preventDefault();
     e.stopPropagation();
     drag.current = { id: d.vDeviceId, part, grabPx: toPct(e), grabPos: d.position! };
@@ -475,16 +530,53 @@ function RoomEditor({ room, projectCode, onSaved, onShapeSaved, onDone }: {
         return { ...d, position: { ...g, x: clamp(g.x + dx), y: clamp(g.y + dy) } };
       }
       if (g.kind === 'point') return d; // 点位不参与编辑（列表已过滤，仅作类型守卫）
-      if (ctx.part === 'p1') return { ...d, position: { ...g, x1: p.x, y1: p.y } };
-      if (ctx.part === 'p2') return { ...d, position: { ...g, x2: p.x, y2: p.y } };
-      const lenDx = g.x2 - g.x1, lenDy = g.y2 - g.y1;
-      const nx1 = clamp(g.x1 + dx), ny1 = clamp(g.y1 + dy);
-      return { ...d, position: { ...g, x1: nx1, y1: ny1, x2: clamp(nx1 + lenDx), y2: clamp(ny1 + lenDy) } };
+      if (g.kind === 'segment') {
+        // 软带路径：body=整条平移；p:N=拖动第 N 个顶点（弯折）
+        if (ctx.part === 'body') {
+          return { ...d, position: { ...g, points: g.points.map((pt) => ({ x: clamp(pt.x + dx), y: clamp(pt.y + dy) })) } };
+        }
+        const m = /^p:(\d+)$/.exec(ctx.part);
+        if (m) {
+          const idx = Number(m[1]);
+          if (idx >= 0 && idx < g.points.length) {
+            const points = g.points.map((pt, j) => (j === idx ? { x: p.x, y: p.y } : { ...pt }));
+            return { ...d, position: { ...g, points } };
+          }
+        }
+        return d;
+      }
+      return d;
     }));
     setDirty(true);
   };
 
   const onPointerUp = () => { drag.current = null; };
+
+  /** 在第 segIdx 段的中点插入新顶点，并立即进入拖动新顶点（加弯折） */
+  const insertPoint = (e: React.PointerEvent, d: Device, segIdx: number) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const g = d.position;
+    if (!g || g.kind !== 'segment' || g.points.length >= 32) return;
+    const a = g.points[segIdx];
+    const b = g.points[segIdx + 1];
+    if (!a || !b) return;
+    const np: PathPoint = { x: clamp((a.x + b.x) / 2), y: clamp((a.y + b.y) / 2) };
+    const points = [...g.points.slice(0, segIdx + 1), np, ...g.points.slice(segIdx + 1)];
+    setDevices((ds) => ds.map((x) => (x.vDeviceId !== d.vDeviceId ? x : { ...x, position: { ...g, points } })));
+    drag.current = { id: d.vDeviceId, part: `p:${segIdx + 1}`, grabPx: toPct(e), grabPos: { ...g, points } };
+    (e.currentTarget as Element).setPointerCapture(e.pointerId);
+    setDirty(true);
+  };
+
+  /** 双击顶点删除（至少保留两个顶点） */
+  const removePoint = (d: Device, idx: number) => {
+    const g = d.position;
+    if (!g || g.kind !== 'segment' || g.points.length <= 2) return;
+    const points = g.points.filter((_, j) => j !== idx);
+    setDevices((ds) => ds.map((x) => (x.vDeviceId !== d.vDeviceId ? x : { ...x, position: { ...g, points } })));
+    setDirty(true);
+  };
 
   const setElev = (id: string, elev: number) => {
     setDevices((ds) => ds.map((d) => {
@@ -589,19 +681,33 @@ function RoomEditor({ room, projectCode, onSaved, onShapeSaved, onDone }: {
             const elev = p.elev ?? 0;
 
             if (p.kind === 'segment') {
+              // 软带路径：折线主体 + 顶点手柄（拖动弯折/双击删除）+ 段中点插入手柄
+              const pts = p.points;
+              const pathD = pts.map((pt, idx) => `${idx ? 'L' : 'M'}${sx(pt.x)},${sy(pt.y)}`).join(' ');
+              const cx = pts.reduce((s, pt) => s + pt.x, 0) / pts.length;
+              const cy = pts.reduce((s, pt) => s + pt.y, 0) / pts.length;
               return (
                 <g key={d.vDeviceId} opacity={op} className={styles.draggable}
                   onPointerDown={(e) => onPointerDown(e, d, 'body')}>
-                  <line x1={sx(p.x1)} y1={sy(p.y1)} x2={sx(p.x2)} y2={sy(p.y2)}
-                    stroke="#7c3aed" strokeWidth={26} strokeLinecap="round" />
-                  <line x1={sx(p.x1)} y1={sy(p.y1)} x2={sx(p.x2)} y2={sy(p.y2)}
-                    stroke="#c4b5fd" strokeWidth={12} strokeLinecap="round" />
-                  <text x={sx((p.x1 + p.x2) / 2)} y={sy((p.y1 + p.y2) / 2) + 6}
-                    textAnchor="middle" fontSize={24} className={styles.planText}>{d.name}（{elevLabel(elev)}）</text>
-                  <circle cx={sx(p.x1)} cy={sy(p.y1)} r={15} fill="#8b5cf6" stroke="#0b1020" strokeWidth={4}
-                    className={styles.handle} onPointerDown={(e) => onPointerDown(e, d, 'p1')} />
-                  <circle cx={sx(p.x2)} cy={sy(p.y2)} r={15} fill="#8b5cf6" stroke="#0b1020" strokeWidth={4}
-                    className={styles.handle} onPointerDown={(e) => onPointerDown(e, d, 'p2')} />
+                  <path d={pathD} stroke="#7c3aed" strokeWidth={26} fill="none" strokeLinecap="round" strokeLinejoin="round" />
+                  <path d={pathD} stroke="#c4b5fd" strokeWidth={12} fill="none" strokeLinecap="round" strokeLinejoin="round" />
+                  <text x={sx(cx)} y={sy(cy) + 6} textAnchor="middle" fontSize={24}
+                    className={styles.planText} style={{ pointerEvents: 'none' }}>{d.name}（{elevLabel(elev)}）</text>
+                  {pts.map((pt, idx) => (
+                    <circle key={`v${idx}`} cx={sx(pt.x)} cy={sy(pt.y)} r={15} fill="#8b5cf6" stroke="#0b1020" strokeWidth={4}
+                      className={styles.handle}
+                      onPointerDown={(e) => onPointerDown(e, d, `p:${idx}`)}
+                      onDoubleClick={(e) => { e.stopPropagation(); removePoint(d, idx); }} />
+                  ))}
+                  {pts.slice(0, -1).map((a, idx) => {
+                    const b = pts[idx + 1];
+                    return (
+                      <circle key={`m${idx}`} cx={(sx(a.x) + sx(b.x)) / 2} cy={(sy(a.y) + sy(b.y)) / 2} r={9}
+                        fill="rgba(139,92,246,0.3)" stroke="#a78bfa" strokeWidth={3} strokeDasharray="5 4"
+                        className={styles.handleMid}
+                        onPointerDown={(e) => insertPoint(e, d, idx)} />
+                    );
+                  })}
                 </g>
               );
             }
@@ -615,7 +721,7 @@ function RoomEditor({ room, projectCode, onSaved, onShapeSaved, onDone }: {
                   <text x={sx(p.x)} y={sy(p.y) + sr(p.r) + 28} textAnchor="middle" fontSize={24}
                     className={styles.planTextWarm}>{d.name}（{elevLabel(elev)}）</text>
                   <circle cx={sx(p.x + p.r)} cy={sy(p.y)} r={14} fill="#f59e0b" stroke="#0b1020" strokeWidth={4}
-                    className={styles.handle} onPointerDown={(e) => onPointerDown(e, d, 'resize')} />
+                    className={`${styles.handle} ${styles.handleResize}`} onPointerDown={(e) => onPointerDown(e, d, 'resize')} />
                 </g>
               );
             }
@@ -624,7 +730,7 @@ function RoomEditor({ room, projectCode, onSaved, onShapeSaved, onDone }: {
           })}
         </svg>
         <div className={styles.editorHint}>
-          吸顶灯 = 圆盘（拖动移动，右侧手柄调大小） · 灯带 = 长条（拖端点调方向长度） · 右侧滑杆/输入框调房间尺寸与距顶安装高度 · 排除的设备与网关等点位不显示
+          吸顶灯 = 圆盘（拖动移动，右侧手柄调大小） · 灯带 = 可弯折软带（拖顶点变形 · 拖段间虚线圈加顶点 · 双击顶点删除） · 右侧滑杆/输入框调尺寸与距顶高度 · 排除的设备与网关不显示
         </div>
       </div>
 
@@ -779,7 +885,14 @@ export default function IndexPage() {
 
   const applyTree = (payload: { source: 'local' | 'remote'; syncedAt: string | null; tree: Home[] }) => {
     setSyncInfo({ source: payload.source, syncedAt: payload.syncedAt });
-    setHomes(payload.tree);
+    // 灯带旧数据（两点直线）统一归一化为折线路径
+    setHomes(payload.tree.map((h) => ({
+      ...h,
+      rooms: h.rooms.map((r) => ({
+        ...r,
+        devices: r.devices.map((d) => ({ ...d, position: normalizePos(d.position) })),
+      })),
+    })));
     setActiveHome((prev) => {
       if (prev && payload.tree.some((h) => h.projectCode === prev)) return prev;
       const first = payload.tree.find((h) => (h.deviceCount ?? 0) > 0) ?? payload.tree[0];
