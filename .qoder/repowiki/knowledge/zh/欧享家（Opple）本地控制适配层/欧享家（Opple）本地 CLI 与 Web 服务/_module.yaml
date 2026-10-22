@@ -1,0 +1,10 @@
+schema_version: 1
+module_path: cli_tool
+title: 欧享家（Opple）本地 CLI 与 Web 服务
+scope:
+    - src/
+    - bin/
+source_files: []
+depends_on: []
+related_to:
+    - path: web_dashboard

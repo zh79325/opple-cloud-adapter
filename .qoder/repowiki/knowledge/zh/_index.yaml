@@ -1,0 +1,41 @@
+# 知识卡导出索引文件
+schema_version: 1
+locale: zh-CN
+branch: main
+nodes_managed: true
+exported_at: "2026-10-22T05:56:24Z"
+modules:
+    "":
+        dir_name: 欧享家（Opple）本地控制适配层
+        title: 欧享家（Opple）本地控制适配层
+        scope:
+            - README.md
+            - package.json
+            - .gitignore
+        source_files: []
+        children:
+            - cli_tool
+            - web_dashboard
+        depends_on: []
+        related_to: []
+    cli_tool:
+        dir_name: 欧享家（Opple）本地 CLI 与 Web 服务
+        title: 欧享家（Opple）本地 CLI 与 Web 服务
+        scope:
+            - src/
+            - bin/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to:
+            - path: web_dashboard
+    web_dashboard:
+        dir_name: 欧享家家庭设备管理控制台（Web 前端）
+        title: 欧享家家庭设备管理控制台（Web 前端）
+        scope:
+            - web/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to:
+            - path: cli_tool

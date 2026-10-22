@@ -1,0 +1,9 @@
+schema_version: 1
+module_path: web_dashboard
+title: 欧享家家庭设备管理控制台（Web 前端）
+scope:
+    - web/
+source_files: []
+depends_on: []
+related_to:
+    - path: cli_tool
