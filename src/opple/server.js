@@ -3,7 +3,7 @@
 import { createServer } from 'node:http';
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { join, extname } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { OppleClient } from './client.js';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
@@ -111,7 +111,8 @@ async function readBody(req) {
   catch { return {}; }
 }
 
-const server = createServer(async (req, res) => {
+/** 请求处理：API 路由 + 静态托管。独立服务（npm run web）与 ice dev server 内嵌模式共用 */
+export async function handleRequest(req, res) {
   const url = new URL(req.url, `http://localhost:${PORT}`);
   const path = url.pathname;
 
@@ -223,9 +224,14 @@ const server = createServer(async (req, res) => {
   }
 
   return json(res, 404, { error: 'not found' });
-});
+}
 
-server.listen(PORT, () => {
-  console.log(`opple web 已启动: http://localhost:${PORT}`);
-  console.log(existsSync(join(WEB_DIST, 'index.html')) ? '前端已就绪' : '（前端未构建，仅 API 模式）');
-});
+// 仅直接运行本文件时启动独立 HTTP 服务（npm run web 生产托管模式）；
+// 开发模式由 ice dev server 内嵌 handleRequest（见 web/ice.config.mts），不重复监听端口
+const isMain = Boolean(process.argv[1]) && import.meta.url === pathToFileURL(process.argv[1]).href;
+if (isMain) {
+  createServer((req, res) => handleRequest(req, res)).listen(PORT, () => {
+    console.log(`opple web 已启动: http://localhost:${PORT}`);
+    console.log(existsSync(join(WEB_DIST, 'index.html')) ? '前端已就绪' : '（前端未构建，仅 API 模式）');
+  });
+}

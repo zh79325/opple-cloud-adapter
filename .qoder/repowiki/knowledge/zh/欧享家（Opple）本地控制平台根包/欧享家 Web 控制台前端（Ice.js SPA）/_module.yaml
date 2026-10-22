@@ -1,6 +1,6 @@
 schema_version: 1
 module_path: web_dashboard
-title: 欧享家家庭设备管理控制台（Web 前端）
+title: 欧享家 Web 控制台前端（Ice.js SPA）
 scope:
     - web/
 source_files: []

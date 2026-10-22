@@ -1,0 +1,10 @@
+schema_version: 1
+module_path: ""
+title: 欧享家（Opple）本地控制平台根包
+scope:
+    - README.md
+    - package.json
+    - .gitignore
+source_files: []
+depends_on: []
+related_to: []

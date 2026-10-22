@@ -88,7 +88,17 @@ async function api(path: string, init?: RequestInit) {
     headers: { 'Content-Type': 'application/json' },
     ...init,
   });
-  const j = await res.json();
+  const text = await res.text();
+  let j: any;
+  try {
+    j = JSON.parse(text);
+  } catch {
+    // 非 JSON 响应：最常见是 dev 代理目标（5170 后端）未启动时 http-proxy 返回的纯文本错误页
+    if (text.includes('Error occurred while trying to proxy')) {
+      throw new Error('本地后端未启动（端口 5170）：请在仓库根目录先运行 npm run web，再刷新页面');
+    }
+    throw new Error(`后端返回非 JSON（HTTP ${res.status}）：${text.slice(0, 80)}`);
+  }
   if (!res.ok || j.error) throw new Error(j.error ?? `HTTP ${res.status}`);
   return j;
 }
@@ -922,7 +932,8 @@ export default function IndexPage() {
       setJustSynced(true);
       setTimeout(() => setJustSynced(false), 2000);
     } catch (e: any) {
-      setError(`同步失败：${e.message}`);
+      // 同步是唯一依赖云端 token 的操作，token 提示仅在此处展示
+      setError(`同步失败：${e.message}（token 可能失效，请重新抓包更新）`);
     } finally {
       setSyncing(false);
     }
@@ -1040,7 +1051,7 @@ export default function IndexPage() {
 
       {error && (
         <div className={styles.errorBanner}>
-          <b>数据加载失败：</b>{error}（token 可能失效，请重新抓包更新）
+          <b>数据加载失败：</b>{error}
         </div>
       )}
       {loading && !homes.length && !error && <div className={styles.loadingTip}>正在加载家庭数据…</div>}
