@@ -687,6 +687,33 @@
   cursor: nwse-resize;
 }
 
+/* 布局编辑器吸附提示：对齐参考线（绿虚线）与端点对接高亮圈 */
+.snapGuide {
+  stroke: #34d399;
+  stroke-width: 2;
+  stroke-dasharray: 10 8;
+  opacity: 0.9;
+  pointer-events: none;
+}
+
+.snapTarget {
+  fill: none;
+  stroke: #34d399;
+  stroke-width: 4;
+  pointer-events: none;
+  animation: snapPulse 0.9s ease-in-out infinite;
+}
+
+@keyframes snapPulse {
+  0%, 100% {
+    stroke-opacity: 1;
+  }
+
+  50% {
+    stroke-opacity: 0.35;
+  }
+}
+
 /* 灯带段中点插入手柄（虚线小圈，拖动即加顶点弯折） */
 .handleMid {
   cursor: copy;

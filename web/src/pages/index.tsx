@@ -16,6 +16,8 @@ export const pageConfig = () => ({
  * - 网关/插座：{ kind: 'point', x, y, elev } —— elev≈0 地面，≈30 墙面
  */
 interface PathPoint { x: number; y: number }
+/** 布局编辑器吸附提示：gx/gy 为对齐参考线坐标（null=无），vertex 为端点对接命中的目标顶点 */
+interface SnapHint { gx: number | null; gy: number | null; vertex: PathPoint | null }
 interface CirclePos { kind: 'circle'; x: number; y: number; r: number; elev?: number; name?: string }
 interface SegmentPos { kind: 'segment'; points: PathPoint[]; elev?: number; name?: string }
 interface PointPos { kind: 'point'; x: number; y: number; elev?: number; name?: string }
@@ -52,6 +54,7 @@ interface Home {
 
 const API = '/api';
 const UNIT = 0.05; // 每百分比单位对应米数（100 单位 = 5m）
+const SNAP = 1.2; // 编辑器吸附阈值（0-100 坐标，1 单位 ≈ 画布宽 1%）
 
 const clamp = (v: number, min = 0, max = 100) => Math.round(Math.min(max, Math.max(min, v)));
 const toM = (v: number) => (v * UNIT).toFixed(1);
@@ -626,6 +629,45 @@ function RoomEditor({ room, projectCode, onSaved, onShapeSaved, onDone }: {
   const [dirty, setDirty] = useState(false);
   const svgRef = useRef<SVGSVGElement | null>(null);
   const drag = useRef<{ id: string; part: string; grabPx: { x: number; y: number }; grabPos: Pos } | null>(null);
+  const [snapHint, setSnapHint] = useState<SnapHint | null>(null);
+
+  /** 收集吸附候选点：其他设备的灯带顶点与吸顶灯圆心 */
+  const snapTargets = (selfId: string): PathPoint[] => devices
+    .filter((d) => d.vDeviceId !== selfId)
+    .flatMap((d) => {
+      const p = d.position;
+      if (!p) return [];
+      if (p.kind === 'segment') return p.points;
+      if (p.kind === 'circle') return [{ x: p.x, y: p.y }];
+      return [];
+    });
+
+  /** 吸附：其他顶点轴对齐（同点双向命中=端点对接）+ 墙边/贴墙吸边，返回修正坐标与提示 */
+  const computeSnap = (nx: number, ny: number, selfId: string, edges: number[]) => {
+    let bx: { d: number; v: number; pt: PathPoint | null } | null = null;
+    let by: { d: number; v: number; pt: PathPoint | null } | null = null;
+    const better = (cur: typeof bx, d: number, v: number, pt: PathPoint | null) =>
+      (!cur || Math.abs(d) < Math.abs(cur.d) ? { d, v, pt } : cur);
+    for (const t of snapTargets(selfId)) {
+      const ddx = t.x - nx;
+      if (Math.abs(ddx) < SNAP) bx = better(bx, ddx, t.x, t);
+      const ddy = t.y - ny;
+      if (Math.abs(ddy) < SNAP) by = better(by, ddy, t.y, t);
+    }
+    for (const ed of edges) {
+      const ddx = ed - nx;
+      if (Math.abs(ddx) < SNAP) bx = better(bx, ddx, ed, null);
+      const ddy = ed - ny;
+      if (Math.abs(ddy) < SNAP) by = better(by, ddy, ed, null);
+    }
+    return {
+      x: nx + (bx?.d ?? 0),
+      y: ny + (by?.d ?? 0),
+      gx: bx ? bx.v : null,
+      gy: by ? by.v : null,
+      vertex: bx?.pt && by?.pt && bx.pt === by.pt ? bx.pt : null,
+    };
+  };
 
   useEffect(() => {
     // 仅参与空间模型的灯具参与布局编辑；网关等点位与手动排除的设备不占位
@@ -666,38 +708,60 @@ function RoomEditor({ room, projectCode, onSaved, onShapeSaved, onDone }: {
     const p = toPct(e);
     const dx = p.x - ctx.grabPx.x;
     const dy = p.y - ctx.grabPx.y;
-    setDevices((ds) => ds.map((d) => {
-      if (d.vDeviceId !== ctx.id) return d;
-      const g = ctx.grabPos;
-      if (g.kind === 'circle') {
-        if (ctx.part === 'resize') {
-          const dist = Math.abs(p.x - g.x);
-          return { ...d, position: { ...g, r: Math.max(3, Math.round(dist)) } };
+    const g = ctx.grabPos;
+    if (g.kind === 'point') return; // 点位不参与编辑（列表已过滤，仅作类型守卫）
+
+    // 半径手柄：不参与吸附
+    if (g.kind === 'circle' && ctx.part === 'resize') {
+      const r = Math.max(3, Math.round(Math.abs(p.x - g.x)));
+      setDevices((ds) => ds.map((d) => (d.vDeviceId === ctx.id ? { ...d, position: { ...g, r } } : d)));
+      setSnapHint(null);
+      setDirty(true);
+      return;
+    }
+
+    let hint: SnapHint = { gx: null, gy: null, vertex: null };
+    let patch: (grab: Pos) => Pos;
+
+    if (g.kind === 'circle') {
+      // 圆心吸附：其他关键点轴对齐 + 圆盘贴墙（圆心到边 = 半径）
+      const s = computeSnap(clamp(g.x + dx), clamp(g.y + dy), ctx.id, [g.r, 100 - g.r]);
+      hint = { gx: s.gx, gy: s.gy, vertex: null };
+      patch = () => ({ ...g, x: clamp(s.x), y: clamp(s.y) });
+    } else if (ctx.part === 'body') {
+      // 整条平移：任一顶点命中吸附即取修正量最小者，整条跟随（保持形状）
+      let adjX = 0;
+      let adjY = 0;
+      let score = Infinity;
+      for (const pt of g.points) {
+        const bx = pt.x + dx;
+        const by = pt.y + dy;
+        const s = computeSnap(bx, by, ctx.id, [0, 100]);
+        const sc = Math.abs(s.x - bx) + Math.abs(s.y - by);
+        if (sc < score) {
+          score = sc;
+          adjX = s.x - bx;
+          adjY = s.y - by;
+          hint = { gx: s.gx, gy: s.gy, vertex: s.vertex };
         }
-        return { ...d, position: { ...g, x: clamp(g.x + dx), y: clamp(g.y + dy) } };
       }
-      if (g.kind === 'point') return d; // 点位不参与编辑（列表已过滤，仅作类型守卫）
-      if (g.kind === 'segment') {
-        // 软带路径：body=整条平移；p:N=拖动第 N 个顶点（弯折）
-        if (ctx.part === 'body') {
-          return { ...d, position: { ...g, points: g.points.map((pt) => ({ x: clamp(pt.x + dx), y: clamp(pt.y + dy) })) } };
-        }
-        const m = /^p:(\d+)$/.exec(ctx.part);
-        if (m) {
-          const idx = Number(m[1]);
-          if (idx >= 0 && idx < g.points.length) {
-            const points = g.points.map((pt, j) => (j === idx ? { x: p.x, y: p.y } : { ...pt }));
-            return { ...d, position: { ...g, points } };
-          }
-        }
-        return d;
-      }
-      return d;
-    }));
+      patch = () => ({ ...g, points: g.points.map((pt) => ({ x: clamp(pt.x + dx + adjX), y: clamp(pt.y + dy + adjY) })) });
+    } else {
+      // 单顶点：端点对接 / 吸边 / 水平垂直对齐
+      const m = /^p:(\d+)$/.exec(ctx.part);
+      const idx = m ? Number(m[1]) : -1;
+      if (idx < 0 || idx >= g.points.length) return;
+      const s = computeSnap(p.x, p.y, ctx.id, [0, 100]);
+      hint = { gx: s.gx, gy: s.gy, vertex: s.vertex };
+      patch = () => ({ ...g, points: g.points.map((pt, j) => (j === idx ? { x: clamp(s.x), y: clamp(s.y) } : { ...pt })) });
+    }
+
+    setDevices((ds) => ds.map((d) => (d.vDeviceId === ctx.id ? { ...d, position: patch(d.position!) } : d)));
+    setSnapHint(hint);
     setDirty(true);
   };
 
-  const onPointerUp = () => { drag.current = null; };
+  const onPointerUp = () => { drag.current = null; setSnapHint(null); };
 
   /** 在第 segIdx 段的中点插入新顶点，并立即进入拖动新顶点（加弯折） */
   const insertPoint = (e: React.PointerEvent, d: Device, segIdx: number) => {
@@ -865,9 +929,20 @@ function RoomEditor({ room, projectCode, onSaved, onShapeSaved, onDone }: {
 
             return null;
           })}
+
+          {/* 吸附提示：对齐参考线 + 端点对接高亮圈 */}
+          {snapHint?.gx != null && (
+            <line x1={sx(snapHint.gx)} y1={0} x2={sx(snapHint.gx)} y2={VH} className={styles.snapGuide} />
+          )}
+          {snapHint?.gy != null && (
+            <line x1={0} y1={sy(snapHint.gy)} x2={VW} y2={sy(snapHint.gy)} className={styles.snapGuide} />
+          )}
+          {snapHint?.vertex && (
+            <circle cx={sx(snapHint.vertex.x)} cy={sy(snapHint.vertex.y)} r={20} className={styles.snapTarget} />
+          )}
         </svg>
         <div className={styles.editorHint}>
-          吸顶灯 = 圆盘（拖动移动，右侧手柄调大小） · 灯带 = 可弯折软带（拖顶点变形 · 拖段间虚线圈加顶点 · 双击顶点删除） · 右侧滑杆/输入框调尺寸与距顶高度 · 排除的设备与网关不显示
+          吸顶灯 = 圆盘（拖动移动，右侧手柄调大小） · 灯带 = 可弯折软带（拖顶点变形 · 拖段间虚线圈加顶点 · 双击顶点删除） · 靠近墙边/其他顶点自动吸附对接（绿色线为对齐参考，绿圈为对接点） · 右侧滑杆/输入框调尺寸与距顶高度 · 排除的设备与网关不显示
         </div>
       </div>
 
