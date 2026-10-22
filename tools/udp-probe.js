@@ -347,6 +347,113 @@ async function colorCmd() {
   console.log('\n判读：报告灯在①②③④哪一步变色、最终什么颜色——即颜色键号的归因结果');
 }
 
+// ---- App 同款成对发送（2026-10-23 lan-diff.pcap 逐字节 diff 定案）----
+// App 真实行为：SrcTransNo 会话内小整数严格 +1（观测 400→401→402→403），
+// 顺序 = 先 0x02940000 状态包 后 0x059b0000 重置包（间隔 ~2μs 背靠背），
+// DstTransNo=0xffffffff、SrcPort=55001、CRC-16/XMODEM（已验证 6/6 匹配）。
+// 历史拒收根因：我们用 getSrcTransNo() 随机大数 + 顺序颠倒，设备端重放保护丢弃。
+async function pairCmd(bright, cct, startNo) {
+  const resetAppend = Buffer.from([0xff, 0xff, 0xff, 0xff, 0x00]);
+  const pktA = buildStatusPacket({ bright, cct, transNo: startNo });
+  const pktB = buildStatusPacket({ transNo: startNo + 1, msgType: 0x059b0000, appendOverride: resetAppend });
+  console.log(`App 同款成对下发：亮度=${bright}% 色温=${cct}  SrcTransNo=${startNo}(0x02940000) → ${startNo + 1}(0x059b0000)`);
+  const replies = await new Promise((resolve) => {
+    const sock = createSocket({ type: 'udp4', reuseAddr: true });
+    const rs = [];
+    sock.on('message', (buf, rinfo) => rs.push({ from: `${rinfo.address}:${rinfo.port}`, len: buf.length, hex: buf.toString('hex') }));
+    sock.bind(APP_LOCAL_PORT, () => {
+      sock.setBroadcast(true);
+      sock.send(pktA, APP_LOCAL_PORT, BROADCAST_IP);
+      setImmediate(() => sock.send(pktB, APP_LOCAL_PORT, BROADCAST_IP));
+      setTimeout(() => { try { sock.close(); } catch { /* noop */ } resolve(rs); }, 3000);
+    });
+  });
+  console.log(`\n==== ${replies.length} 个回包 ====`);
+  for (const r of replies) console.log(`  ${r.from}  ${r.len}B  ${r.hex.slice(0, 100)}`);
+  if (!replies.length) console.log('  无回包——关键判据：灯是否真的变亮/变暗到目标值');
+  return replies;
+}
+
+// ---- 控制器权限宣告 + 控制（2026-10-23 握手机制逆向定案）----
+// App 对设备无 Handshake（0x127A0000 仅用于云端测速 testUdpSpeed）。
+// 真正的「会话注册」= App 周期广播 199B（0x02020000 ListenLanDevice，Proto=4，
+// AppendData 明文不加密——NotLanEcryptMsgType 名单成员），内含设备记录
+// {classSku, MAC, deviceId, 控制者IP:端口, 名称16B, ProjectCodeKey aabbcc00/01}。
+// 设备收到后把控制者 IP 记为授权会话方 → 后续控制包放行。Mac 从未宣告过 → 全拒。
+// 75B 记录布局（真机样本逐字节破译）：000000 | classSku(4B BE) | 0003 | MAC(6B) |
+//   00000001 | deviceId(4B BE) | 00000000 | 00000b22 | IP(4B) | d6d9 | 名称(16B) |
+//   aabbcc00 | 00000001 | 0043f261 | aabbcc01 | 000005718c00
+function buildAnnouncePacket({ macHex, srcIp, deviceIdNum, transNo }) {
+  const ipB = (srcIp ?? localLanIp()).split('.').map(Number);
+  const u32b = (v) => { const b = Buffer.alloc(4); b.writeUInt32BE(v >>> 0); return b; };
+  const ad = Buffer.concat([
+    Buffer.from([0x00, 0x00, 0x00]),
+    Buffer.from([0x29, 0x07, 0x00, 0x03]),          // classSku 0x29070003
+    Buffer.from([0x00, 0x03]),
+    Buffer.from(macHex.replace(/[:]/g, ''), 'hex'), // 6B MAC
+    u32b(1),                                        // 在线状态
+    u32b(deviceIdNum),                              // deviceId
+    u32b(0),
+    Buffer.from([0x00, 0x00, 0x0b, 0x22]),
+    Buffer.from(ipB), u32b(APP_LOCAL_PORT).subarray(2), // IP 4B + 端口 2B (55001=d6d9)
+    Buffer.from('Digt_6998'.split('').flatMap((c) => [...Buffer.from(c, 'latin1')])), // 9B 名称
+    Buffer.alloc(7),                                // 名称补零至 16B
+    Buffer.from([0xaa, 0xbb, 0xcc, 0x00]),
+    u32b(1),
+    Buffer.from([0x00, 0x43, 0xf2, 0x61]),
+    Buffer.from([0xaa, 0xbb, 0xcc, 0x01]),
+    Buffer.from([0x00, 0x00, 0x05, 0x71, 0x8c, 0x00]),
+  ]);
+  const msgLen = 24 + ad.length;                    // 99
+  const head = Buffer.concat([
+    // OppleLink 20B（DstIP=子网广播 192.168.0.255，与 App 一致）
+    Buffer.from(ipB), u32b(APP_LOCAL_PORT),
+    Buffer.from([0xc0, 0xa8, 0x00, 0xff]), u32b(APP_LOCAL_PORT),
+    u32b(1010),
+    // OppleNetwork 80B
+    u32b(10101), u32b(0), u32b(104 + ad.length), u32b(1), u32b(2), u32b(3),
+    u32b(4),                                        // Proto=4（Type4，App 199B 实测值）
+    u32b(5),                                        // L3ChkSum
+    u32b(0), u32b(0), u32b(deviceIdNum), u32b(0), u32b(0), u32b(0),
+    u32b(1), u32b(1), u32b(deviceIdNum), u32b(0), u32b(0), u32b(0),
+    // OppleSession 16B（DstTransNo=SrcTransNo 回显，getPduPacketData 默认逻辑）
+    u32b(transNo), u32b(transNo), u32b(msgLen), u32b(0),
+    // OppleAppHead 8B
+    u32b(0x02020000), u32b(0),
+  ]);
+  const crc = calcCRC(Buffer.concat([head.subarray(100), ad])); // 明文 CRC
+  head.writeUInt32BE(crc, 112);
+  return Buffer.concat([head, ad]);                 // 数据区不加密
+}
+
+async function announceCmd(bright, cct, startNo, bindIp) {
+  // MAC 凭证 = HAR DeviceSummaryV2 里天境灯绑定记录的 Mac（=配网时手机 MAC）
+  // 设备端校验宣告包 MAC 是否匹配绑定关系；IP 用本机（UDP 真实源一致）
+  const macHex = '6879c4916998';
+  const myIp = bindIp ?? localLanIp();              // --src=0.108 时完整冒充 App
+  const pktA = buildAnnouncePacket({ macHex, srcIp: myIp, deviceIdNum: 0x004020a4, transNo: startNo });
+  const resetAppend = Buffer.from([0xff, 0xff, 0xff, 0xff, 0x00]);
+  const pktB = buildStatusPacket({ bright, cct, transNo: startNo + 1, srcIp: myIp });
+  const pktC = buildStatusPacket({ transNo: startNo + 2, msgType: 0x059b0000, appendOverride: resetAppend, srcIp: myIp });
+  console.log(`宣告+控制：announce(${pktA.length}B transNo=${startNo}) → 状态(${startNo + 1}) → 重置(${startNo + 2})  身份 ${myIp} / ${macHex}${bindIp ? '（IP 冒充）' : ''}`);
+  const replies = await new Promise((resolve) => {
+    const sock = createSocket({ type: 'udp4', reuseAddr: true });
+    const rs = [];
+    sock.on('message', (buf, rinfo) => rs.push({ from: `${rinfo.address}:${rinfo.port}`, len: buf.length, hex: buf.toString('hex') }));
+    sock.bind({ address: bindIp ?? '0.0.0.0', port: APP_LOCAL_PORT }, () => {
+      sock.setBroadcast(true);
+      sock.send(pktA, APP_LOCAL_PORT, '192.168.0.255');
+      sock.send(pktA, APP_LOCAL_PORT, BROADCAST_IP);
+      setTimeout(() => sock.send(pktB, APP_LOCAL_PORT, BROADCAST_IP), 50);
+      setTimeout(() => sock.send(pktC, APP_LOCAL_PORT, BROADCAST_IP), 80);
+      setTimeout(() => { try { sock.close(); } catch { /* noop */ } resolve(rs); }, 3000);
+    });
+  });
+  console.log(`\n==== ${replies.length} 个回包 ====`);
+  for (const r of replies) console.log(`  ${r.from}  ${r.len}B  ${r.hex.slice(0, 100)}`);
+  console.log('\n判据：灯是否变到目标亮温（非回包）');
+}
+
 // ---- 单设备单控包（2026-10-23 逆向：getDeviceControl@556602 + sendDeviceControl@554920
 //      + LanControlAppendData@571267）----
 // App 调灯效参数（速度/方向）走此通道：LAN UDP 单播网关，网关再经 BLE SigMesh 转发给灯带。
@@ -455,6 +562,7 @@ const { positionals, values: opts } = parseArgs({
     ucloudid: { type: 'string', default: '1' },
     dport: { type: 'string', default: '65501' },
     timeout: { type: 'string', default: '300' },
+    src: { type: 'string' },   // 冒充源 IP（需先 sudo ifconfig en0 alias <ip>/32）
   },
 });
 const common = {
@@ -463,6 +571,7 @@ const common = {
   timeout: Number(opts.timeout),
 };
 const [cmd, a1, a2] = positionals;
+const a3 = positionals[3];
 
 switch (cmd) {
   case 'color':
@@ -492,6 +601,14 @@ switch (cmd) {
     else if (r1.ok && !r2.ok) console.log('仅真实 uCloudId 生效 → 设备端校验绑定关系，但 uCloudId 一次抓包即可获得（静态值）');
     else console.log('真实 uCloudId 也无响应 → PDU 布局或加密推测需按 discover 回包校准');
     break;
+  case 'announce':
+    if (!a1 || !a2 || !a3) { console.error('用法: announce <亮度> <色温> <SrcTransNo起值>'); process.exit(1); }
+    await announceCmd(Number(a1), Number(a2), Number(a3), opts.src);
+    break;
+  case 'pair':
+    if (!a1 || !a2 || !a3) { console.error('用法: pair <亮度0-100> <色温0-10000> <SrcTransNo起值>'); process.exit(1); }
+    await pairCmd(Number(a1), Number(a2), Number(a3));
+    break;
   case 'speed':
     if (!a1) { console.error('用法: speed <1-100> [方向0|1]'); process.exit(1); }
     await speedCmd(Number(a1), a2 === undefined ? 0 : Number(a2));
@@ -502,6 +619,7 @@ switch (cmd) {
     break;
   default:
     console.log(`欧享家 UDP 直控探测
+  node tools/udp-probe.js pair <亮度> <色温> <SrcTransNo>  # App 同款成对包（状态→重置，计数器接续）
   node tools/udp-probe.js speed <1-100> [方向0|1]          # 跑马速度单控（单播网关→BLE 灯带，App 同款通道）
   node tools/udp-probe.js msg <hexMsgType> <devId> <hex>   # 通用单控（任意命令字+手工 AppendData）
   node tools/udp-probe.js cct <色温0-10000> [亮度0-100]   # 全状态控制包（App 模板校准版）
