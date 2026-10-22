@@ -4,3 +4,5 @@ data/decompiled.js
 data/extracted/
 node_modules/
 __pycache__/
+web/build/
+web/node_modules/
