@@ -9,8 +9,8 @@ import { OppleClient } from './client.js';
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const PORT = Number(process.env.PORT ?? 5170);
 const WEB_DIST = join(__dirname, '../../web/build');
-// 设备位置存储：projectCode -> gpno -> vDeviceId -> { x, y, name }
-// 坐标为房间平面图上的相对位置（0-100 百分比）
+// 设备位置存储：projectCode -> gpno -> { shape: {w,h,depth}, devices: { vDeviceId -> position } }
+// 位置坐标为房间平面百分比 (0-100)；elev 为离地高度百分比（0=地面，100=天花）
 const POS_FILE = join(__dirname, '../../data/device-positions.json');
 
 function loadPositions() {
@@ -21,15 +21,30 @@ function savePositions(data) {
   writeFileSync(POS_FILE, JSON.stringify(data, null, 2));
 }
 
-/** 给 tree 结果注入设备位置（position 不存在时为 null，前端用默认布局） */
+/** 兼容读出房间数据：统一为 { shape, devices } 形态（兼容旧版直接存设备映射） */
+function readRoom(pos, projectCode, gpno) {
+  const roomRaw = pos[projectCode]?.[String(gpno)];
+  if (!roomRaw) return { shape: null, devices: {} };
+  if (roomRaw.devices) return { shape: roomRaw.shape ?? null, devices: roomRaw.devices };
+  // 旧格式：vDeviceId -> position 直接映射
+  return { shape: null, devices: roomRaw };
+}
+
+/** 写入房间数据（保持新格式） */
+function writeRoom(all, projectCode, gpno, shape, devices) {
+  all[projectCode] ??= {};
+  all[projectCode][String(gpno)] = { shape, devices };
+}
+
+/** 给 tree 结果注入设备位置与房间尺寸 */
 function treeWithPositions(tree) {
   const pos = loadPositions();
   for (const home of tree) {
-    const homePos = pos[home.projectCode] ?? {};
     for (const room of home.rooms) {
-      const roomPos = homePos[String(room.gpno)] ?? {};
+      const { shape, devices } = readRoom(pos, home.projectCode, room.gpno);
+      room.shape = shape ?? { w: 100, h: 45, depth: 100 }; // 默认：宽:高:深 = 100:45:100
       for (const d of room.devices) {
-        d.position = roomPos[d.vDeviceId] ?? null;
+        d.position = devices[d.vDeviceId] ?? null;
       }
     }
   }
@@ -107,13 +122,14 @@ const server = createServer(async (req, res) => {
       // 保存房间内设备位置（拖拽后调用）
       // body: { projectCode, gpno, positions: { vDeviceId: { x, y, name } } }
       if (req.method === 'POST' && path === '/api/positions') {
-        const { projectCode, gpno, positions } = await readBody(req);
+        // body: { projectCode, gpno, shape?, positions }（shape={w,h,depth} 房间尺寸，可选）
+        const { projectCode, gpno, shape, positions } = await readBody(req);
         if (!projectCode || !gpno || typeof positions !== 'object') {
           return json(res, 400, { error: 'projectCode, gpno, positions required' });
         }
         const all = loadPositions();
-        all[projectCode] ??= {};
-        all[projectCode][String(gpno)] = positions;
+        const prev = readRoom(all, projectCode, gpno);
+        writeRoom(all, projectCode, gpno, shape ?? prev.shape, positions);
         savePositions(all);
         return json(res, 200, { ok: true, saved: Object.keys(positions).length });
       }
