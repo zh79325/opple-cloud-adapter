@@ -22,6 +22,11 @@ const HELP = `opple — 欧享家（欧普 INNO）本地终端控制
     colors=色1,色2 speed=1-100 direction=0|1 loop=0|1 → 专属命令字全参下发
     colors 每项: 预设名 / #RRGGBB / 8位CXCYhex（自动补零 6 组防吞参）
     速度换算: 1~20 同最慢档; 60 档≈1.03m/s, 100 档≈2.07m/s（按 9.69m 带标定）
+  sync <效果> [speed=N | v=米每秒] [colors=…] [swap]
+                                     双带无缝同步（客厅 2122018+2122019）
+    配方: 参数镜像 + 方向互补（长带正向/短带反向）+ 背靠背下发
+    v= 输入物理流速自动反推档位; 下发后回显周期与两条带的实际流速
+    周期 T(s)=16.40-0.117×s 秒/圈（1~20 平台≈14.06s; 短带长度为估算值）
   call <id> <msgType> <v1,v2,…>      底层命令调用（actions 查到的任意 msgType）
   raw <METHOD> <path> [jsonQuery]    直接调用任意接口（调试用）
 
@@ -85,6 +90,33 @@ const SCENE = {
   静态色温渐变: { mode: 4, full: '0x140B0000' },
   动态色温渐变: { mode: 5, full: '0x140D0000' },
 };
+
+// —— 客厅双带无缝同步（真机验证配方：参数镜像 + 方向互补 + 背靠背下发）——
+// 两带物理上共享两端点成环（2122018 起点=2122019 起点，终点亦同），方向互补使色块同绕向流动。
+const SYNC_STRIPS = [
+  { id: '2122018', name: '电视机灯带', len: 9.69, dir: 0 },   // 长带（实测 401+333+235cm），正向
+  { id: '2122019', name: '沙发后侧灯带', len: 7.15, dir: 1 }, // 短带（长度为估算值），反向
+];
+// 跑马速度→物理流速（9.69m 带逐档标定定案）：
+// 周期 T(s)=16.40−0.117×s 秒/圈（s≥20 严格线性；1~20 clamp 平台 T≈14.06s → 流速 0.69m/s 封顶）
+const MARQUEE_PERIOD = s => (s <= 20 ? 14.06 : 16.40 - 0.117 * s);
+// 物理流速 v(m/s) → 反推速度档（曲线仅在 20~100 段单调，两端 clamp）
+const speedForV = v => Math.min(100, Math.max(20, Math.round((16.40 - SYNC_STRIPS[0].len / v) / 0.117)));
+
+// 组装一条灯效完整参数命令（颜色 hex 补零满 6 组/48 字符防吞参；values 个数=能力表 KeyId 数）
+function buildEffectCmd(effectName, opt) {
+  const sc = SCENE[effectName];
+  if (!sc?.full) throw new Error(`效果 ${effectName} 不支持完整参数下发`);
+  const parts = String(opt.colors ?? '').split(',').filter(Boolean)
+    .map(t => /^[0-9a-fA-F]{8}$/.test(t) ? t.toUpperCase() // 已是 CXCY 打包 hex
+      : ((resolveColor(t) >>> 0).toString(16)).padStart(8, '0').toUpperCase());
+  const colorHex = (parts.join('') || '10EE1123081C055A09B408840B4C0BAE0C96076A0EBA0E38') // 缺省=能力表 6 色彩虹
+    .padEnd(48, '0').slice(0, 48);
+  const values = [0, sc.mode, colorHex, Math.min(100, Math.max(1, Number(opt.speed) || sc.defSpeed))];
+  if (sc.extra?.includes('loop')) values.push(opt.loop === undefined ? 1 : Number(opt.loop));
+  if (sc.extra?.includes('direction')) values.push(opt.direction === undefined ? 0 : Number(opt.direction));
+  return { msg: sc.full, values };
+}
 
 /** xy 色坐标（0-1）→ CXCY 打包值（高16位 cx*10000，低16位 cy*10000） */
 function packCXCY(cx, cy) {
@@ -299,24 +331,56 @@ console.log('效果: ' + Object.keys(SCENE).join(' / ') + '（colors 每项: 预
     let msg = '0x14010000'; // 悦动总开关：只切模式，颜色/速度沿用设备当前值
     let values = [0, sc.mode];
     if (sc.full && (opt.colors || opt.speed || opt.direction || opt.loop)) {
-      // 完整参数模式：走专属命令字，全参下发（values 数量必须=能力表 KeyId 个数）
-      msg = sc.full;
-      let colorHex = '10EE1123081C055A09B408840B4C0BAE0C96076A0EBA0E38'; // 能力表默认 6 色彩虹
-      if (opt.colors) {
-        colorHex = opt.colors.split(',').map(t => {
-          if (/^[0-9a-fA-F]{8}$/.test(t)) return t.toUpperCase(); // 已是 CXCY 打包 hex
-          return ((resolveColor(t) >>> 0).toString(16)).padStart(8, '0').toUpperCase();
-        }).join('');
-      }
-      colorHex = colorHex.padEnd(48, '0').slice(0, 48); // 必须满 6 组（24 字节），防吞参
-      const speed = Math.min(100, Math.max(1, Number(opt.speed) || sc.defSpeed));
-      values = [0, sc.mode, colorHex, speed];
-      if (sc.extra.includes('loop')) values.push(opt.loop === undefined ? 1 : Number(opt.loop));
-      if (sc.extra.includes('direction')) values.push(opt.direction === undefined ? 0 : Number(opt.direction));
+      // 完整参数模式：走专属命令字全参下发（values 数量必须=能力表 KeyId 个数）
+      ({ msg, values } = buildEffectCmd(effectName, opt));
     }
     const c = getClient();
     await c.callAction(vDeviceId, msg, values);
     console.log(`✅ 灯效 ${effectName} -> 设备 ${vDeviceId} (${msg} ${values.join(',')})`);
+    return;
+  }
+
+  if (cmd === 'sync') {
+    // opple sync <效果> [speed=N | v=米每秒] [colors=色1,色2] [swap]
+    // 双带无缝配方（真机验证）：参数镜像 + 方向互补 + 背靠背下发
+    const [effectName, ...optPairs] = rest;
+    if (!SCENE[effectName]) throw new Error(`未知效果: ${effectName}，支持: ${Object.keys(SCENE).join('/')}`);
+    const opt = {};
+    for (const p of optPairs) {
+      const i = p.indexOf('=');
+      if (i < 0) { opt[p] = '1'; continue; } // 无值 flag（如 swap）
+      if (i <= 0) throw new Error(`参数需为 key=value 形式: ${p}`);
+      opt[p.slice(0, i)] = p.slice(i + 1);
+    }
+    let speed = Math.min(100, Math.max(1, Number(opt.speed) || SCENE[effectName].defSpeed));
+    let vNote = '';
+    if (opt.v !== undefined) {
+      const v = Number(opt.v);
+      if (!(v > 0)) throw new Error('v= 需为正数（米/秒）');
+      speed = speedForV(v);
+      vNote = v > 2.07 ? '（超出上限 2.07m/s，按 100 档下发）'
+        : v < 0.69 ? '（低于平台下限 0.69m/s，按 20 档下发）' : '';
+    }
+    // swap：交换方向映射（安装拓扑变化时兜底）
+    const strips = opt.swap ? SYNC_STRIPS.map(s => ({ ...s, dir: s.dir === 0 ? 1 : 0 })) : SYNC_STRIPS;
+    const c = getClient();
+    // 不带 colors 时沿用设备当前配色（读长带 0x1E0D 镜像，避免整包覆盖抹掉 App 配色）
+    if (!opt.colors) {
+      const { status } = await c.deviceStatus(SYNC_STRIPS[0].id);
+      const cur = status.find(s => s.StatusType === '0x1E0D');
+      const hex = cur ? String(cur.Value).replace(/[^0-9a-fA-F]/g, '') : '';
+      if (hex.length >= 16) opt.colors = (hex.match(/.{8}/g) ?? []).join(',');
+    }
+    for (const st of strips) {
+      const { msg, values } = buildEffectCmd(effectName, { ...opt, speed, direction: st.dir });
+      await c.callAction(st.id, msg, values);
+      console.log(`✅ ${st.name} ${st.id} <- ${effectName} speed=${speed} dir=${st.dir} (${msg} ${values.join(',')})`);
+    }
+    if (SCENE[effectName].mode === 1) { // 周期曲线仅对跑马标定
+      const T = MARQUEE_PERIOD(speed);
+      const [a, b] = SYNC_STRIPS;
+      console.log(`周期 T=${T.toFixed(2)}s/圈 → ${a.name} ${a.len}m ≈ ${(a.len / T).toFixed(2)}m/s；${b.name} ${b.len}m(估算) ≈ ${(b.len / T).toFixed(2)}m/s${vNote}`);
+    }
     return;
   }
 
