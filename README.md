@@ -1,51 +1,93 @@
-# opple-cli — 欧享家（欧普 INNO 生态）本地终端
+# opple-cloud-adapter — 欧享家（欧普 INNO 生态）本地控制
 
-零依赖（Node 22+）的命令行工具，通过欧享家云端 API 控制 INNO 网关、天境吸顶灯、SDL/双色灯带等欧普设备。协议细节见 `docs/reverse-engineering-report.md`。
+通过逆向欧享家云端 API，实现欧普 INNO 设备的本地统一控制：CLI + Web 控制台（含 3D 空间建模）。
+协议逆向全记录见 `docs/reverse-engineering-report.md`。
+
+## 组成
+
+| 模块 | 位置 | 说明 |
+|---|---|---|
+| CLI | `bin/opple.js` + `src/cli.js` | 零依赖（Node 22+）命令行控制 |
+| API 客户端 | `src/opple/client.js` | OppleClient（请求头/鉴权/接口封装） |
+| Web 后端 | `src/opple/server.js` | 零依赖 Node http 服务（端口 5170） |
+| Web 前端 | `web/`（ice.js v3） | 家庭/房间/设备 + 位置编辑 + 3D 预览 |
+| 逆向产物 | `data/` | APK、反编译 JS、552 个接口清单、抓包样本 |
+| 空间数据 | `data/device-positions.json` | 房间尺寸 + 设备 3D 几何位置 |
 
 ## 快速开始
 
 ```bash
-# 1. 安装（全局可用 opple 命令）
-cd ~/Desktop/github/opple-cloud-adapter
+# CLI（可选全局安装）
 npm link
+opple token save <32位token> <projectCode>   # 凭据来自抓包（见下）
+opple tree                                    # 家庭→房间→设备 三层结构
+opple devices 客厅                            # 按房间过滤设备
+opple actions 2122050                         # 查设备全部动作+参数范围
+opple light 2122050 cct 4000                  # 色温 4000K
+opple light 2122050 color "#FF8000"           # RGB 自动转 CXCY
+opple scene 2122018 跑马 speed=70 direction=reverse  # 灯效
+opple raw GET /api/Project/GetHomeList        # 调试任意接口
 
-# 2. 保存凭据（token 从抓包获取，见下文）
-opple token save <32位token> <projectCode>
-
-# 3. 使用
-opple homes                       # 家庭列表
-opple devices                     # 全部设备（ID/房间/在线状态）
-opple actions 2112849             # 查询某设备可用动作
-opple call 2112849 <actionId> k=v # 控制设备
-opple raw GET /api/Project/GetHomeList   # 调试任意接口
+# Web 控制台
+node src/opple/server.js                       # 或 npm run web
+# 打开 http://localhost:5170
+# ✎ 平面编辑：拖拽设备（灯=圆盘可调大小、灯带=长条可调长度方向）+ 高度滑条
+# 👁 3D 预览：透视房间盒，灯盘按离地高度悬吊、灯带发光长条
 ```
 
-## 如何获取 token
+## Token 获取
 
-用 Reqable 抓包（流程见项目文档），从任意 `iot2.opple.com` 请求的 `token` 请求头取 32 位 hex 值，`projectcode` 同理（如 356748）。token 会随 `CheckAndRefreshToken` 轮换，App 重新登录后旧 token 失效。
+Reqable 抓包（手机连电脑代理 + 信任证书），从任意 `iot2.opple.com` 请求的 `token` 头取 32 位 hex，`projectcode` 同理（如 356748）。
 
-> 目前登录接口（`/baseservice/User/LoginOrRegisterByCode` 验证码登录）的请求体结构待补抓包确认，确认后即可实现 CLI 内直接登录，摆脱手工抓 token。
+⚠️ **请求头必须全小写**（token/projectcode/clientid…），混用大小写会收到 12004/11009 错误——详见逆向报告第 3 节。
 
-## 命令一览
+## CLI 命令
 
 | 命令 | 说明 |
 |---|---|
 | `token save/check` | 保存/校验凭据 |
-| `homes` | 家庭列表 |
-| `devices` | 设备列表（分页全量） |
-| `actions <vDeviceId>` | 设备可用动作枚举（统一模型"动作"来源） |
-| `call <vDeviceId> <actionId> [k=v…]` | 调用动作（核心控制） |
-| `raw <METHOD> <path> [jsonQuery]` | 任意接口调试 |
+| `tree` | 家庭→房间→设备 三层树 |
+| `devices [房间]` | 设备列表（可按房间名/Gpno 过滤） |
+| `actions <id>` | 全部可调用动作（msgType/参数范围/枚举） |
+| `light <id> <op> <值>` | on/off/bright(1-255或%)/cct(1800-12000K)/duv(-8~8)/color(预设或#RGB)/daylight |
+| `scene <id> <效果> [k=v]` | 流水/跑马/呼吸/律动/三种渐变，含速度/方向/渐变时长 |
+| `call <id> <msgType> <v1,v2…>` | 底层命令调用 |
+| `raw <METHOD> <path> [json]` | 任意接口调试 |
 
-## 已验证
+## Web API
 
-- 请求头构造与 App 一致（ClientId/Token/ProjectCode/App-TimeZone 等）
-- 服务端返回标准业务错误码（12004 token 过期、10001 参数错误），证明协议链路完全联通
-- 532 个接口路径清单在 `data/api_paths.txt`
+| 接口 | 说明 |
+|---|---|
+| `GET /api/tree` | 三层结构 + 房间 shape + 设备 position |
+| `POST /api/positions` | 保存房间尺寸与设备 3D 几何 |
+| `GET /api/positions?projectCode=` | 导出空间数据（供 AI 空间推理） |
+| `GET /api/actions?vDeviceId=` | 设备动作能力 |
+| `GET /api/summary` `/api/homes` `/api/devices` | 设备摘要/家庭/设备列表 |
 
-## 后续规划
+## 空间模型（供 AI 组合控制）
 
-1. 登录接口实现（补抓包后）
-2. `actions` 结构化展示（表格化 action 枚举）
-3. socket.io 实时状态订阅（`wss://iot2.opple.com/socket.io/`）
-4. 统一设备模型适配层（对接 smart-home 总控项目）
+```js
+房间:  { w: 100, h: 45, depth: 100 }                // 宽/高/深（5m×2.3m×5m）
+吸顶灯: { kind: 'circle', x, y, r, elev }            // 圆心+半径+离地高度
+灯带:  { kind: 'segment', x1, y1, x2, y2, elev }    // 端点线段+安装高度
+网关:  { kind: 'point', x, y, elev }
+```
+
+`GET /api/positions` 输出的几何带形态语义：AI 可据此推理"电视墙氛围光 = 右墙 segment 灯带低亮度暖色 + 关闭中央 circle 主灯"这类组合控制。
+
+## 已验证（实测）
+
+- ✅ 请求头/鉴权/接口结构（CLI + Web 全链路，15 台设备真实数据）
+- ✅ 三层模型（GetHomeList → FindUserRoomList → FindDeviceAndGroupListV2）
+- ✅ 调光/调色温/调颜色 CallAction（4 条抓包样本 + CXCY 编码与官方枚举比对吻合）
+- ✅ 位置编辑/3D 渲染端到端（拖拽→保存→刷新还原）
+- ⏳ 灯效（0x14 系列）组包顺序：能力表推断，待真机下发验证
+- ⏳ 登录接口请求体（验证码/一键登录）
+
+## 逆向方法摘要
+
+APK（官网渠道 MD5 校验）→ REA/apktool 解 manifest → 定位 React Native Hermes bundle（`index.android.bundle` v96）→ hbc-decompiler 反编译出 99MB 可读 JS → 搜索域名/命令字/签名关键词定位网络层 → 与 Reqable 抓包互相印证。详见 `docs/reverse-engineering-report.md`。
+
+## 法律声明
+
+仅用于自有设备的互操作性开发（个人智能家居统一管理）。不得将逆向协议用于对外服务。

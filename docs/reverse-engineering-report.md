@@ -38,7 +38,7 @@ tid: <UUID>            (BaseHttpFetch 里统一注入)
 client-up-time: <毫秒时间戳>
 ```
 
-抓包中 iOS 的 header 大小写（app-version/ostype/clientid）与 Android 端 PascalCase（App-Version/OSType/ClientId）并存，服务端按大小写不敏感处理（HTTP 语义本身不敏感）。
+**实测重要结论（v2 修正）**：请求头字段必须全部小写（`token`/`projectcode`/`clientid`/`app-version`/`ostype`/`lang`），与 iOS App 抓包形态完全一致。混用 PascalCase（如 `Token`/`ProjectCode`）会被服务端判失败——曾因此误诊为 token 失效（12004）/无项目权限（11009），这是本项目调试中最大的一个坑。
 
 **关键结论：普通业务接口（设备列表、CallAction 控制指令等）没有任何 sign 签名**——鉴权只靠 Token header + ProjectCode。
 
@@ -125,8 +125,8 @@ client-up-time: <毫秒时间戳>
 2. **Token 生命周期**：CheckAndRefreshToken 定期刷新（App 启动时调用）；写适配器时同样在启动时刷新即可。
 3. **设备模型已就绪**：`FindDeviceListByPage`（列表+状态）+ `FindActionAbilityByVDeviceId`（动作枚举）+ `CallAction`（执行）三件套，正好映射统一设备模型的"设备→属性/动作"。
 4. **实时状态**：socket.io over WebSocket（EIO=3 协议，标准 socket.io 客户端库可直接用），按 ucloundid 订阅。
-5. **下一步缺口**：
-   - 用真机补抓一次 CallAction 的完整请求（手机断 Wi-Fi 用蜂窝网络操作开关灯），确认参数结构
+5. **剩余缺口**：
+   - ~~CallAction 参数结构~~：✅ 已实测确认（2026-10-22 灯光抓包，4 条样本；灯效 0x14 系列组包顺序为能力表推断，待真机验证）
    - 登录接口的请求体结构（验证码登录或一键登录）
    - socket.io 的事件名和消息格式
 
