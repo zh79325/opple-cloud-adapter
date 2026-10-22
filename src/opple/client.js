@@ -148,33 +148,31 @@ export class OppleClient {
 
   /**
    * 家庭 → 房间 → 设备 三层树。
-   * 房间通过 gpNo 逐级下钻（App 用 childCategoryType=2 查子设备）。
+   * 房间列表：FindUserRoomList(version=2)（Gpno/GpName/DeviceCount/Childs 嵌套）
+   * 房间设备：POST FindDeviceAndGroupListV2（body.GpNos=[房间Gpno]，返回网关+子设备）
    */
   async tree() {
     const homes = await this.homeList();
     const out = [];
     for (const home of homes) {
       if (home.IsArchive) continue;
-      // 切换到该家庭的 projectcode 上下文
       const saved = this.projectCode;
       this.projectCode = home.ProjectCode;
       try {
-        // 房间列表（version=2 返回 Gpno/GpName/DeviceCount/Childs）
         const rooms = await this.get('/businessapi/Room/FindUserRoomList', { version: 2 }).catch(() => []);
         const roomList = Array.isArray(rooms) ? rooms : [];
-        // 每个房间下钻设备（gpNo=房间 Gpno，childCategoryType=1 含子设备）
         const roomsOut = [];
         for (const room of roomList) {
-          const devices = await this.listDevices(room.Gpno).catch(() => []);
+          const devices = await this.roomDevices(room.Gpno).catch(() => []);
           roomsOut.push({
             gpno: room.Gpno,
             name: room.GpName ?? room.Name,
             deviceCount: room.DeviceCount,
             devices: devices.map(d => ({
               vDeviceId: d.VDeviceId,
-              name: d.DeviceName,
-              type: d.ClassSkuName ?? d.ClassSku,
-              protocol: d.ProtocolTypeName,
+              name: d.DeviceName ?? d.ClassSkuName,
+              type: d.ClassSkuName,
+              protocol: d.ProtocolTypeList?.[0]?.Name ?? d.ProtocolTypeName,
               online: d.IsOnline,
               parent: d.ParentVDeviceId ?? null,
             })),
@@ -192,5 +190,25 @@ export class OppleClient {
       }
     }
     return out;
+  }
+
+  /**
+   * 按房间拉设备（含网关+子设备），参数照抄 App 实测请求。
+   * @param {number} gpNo 房间 Gpno
+   */
+  async roomDevices(gpNo) {
+    const r = await this.post('/api/device/FindDeviceAndGroupListV2', {
+      GpNos: [gpNo],
+      gpNo,
+      SortMode: '0',
+      needLoadDeviceGroups: false,
+      HasDeviceListInGroup: true,
+      OnlyDevice: true,
+      PageIndex: 0,
+      PageSize: 9999,
+      BindStatus: -1,
+      sortMode: '0',
+    });
+    return r?.RecordList ?? [];
   }
 }
