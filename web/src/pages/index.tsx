@@ -88,25 +88,6 @@ function defaultPos(d: Device, i: number, devices: Device[]): Pos {
   };
 }
 
-// 旧数据兼容升级（无 kind / 无 elev）
-function upgradePos(d: Device, raw: any): Pos | null {
-  if (!raw) return null;
-  if (raw.kind === 'circle' || raw.kind === 'segment' || raw.kind === 'point') {
-    if (raw.kind === 'circle' && !raw.r) return { ...raw, r: 8 };
-    if (raw.elev === undefined) {
-      const elev = raw.kind === 'circle' ? 95 : raw.kind === 'segment' ? 10 : 0;
-      return { ...raw, elev };
-    }
-    return raw;
-  }
-  if (raw.x !== undefined && raw.y !== undefined) {
-    if (isCeiling(d)) return { kind: 'circle', x: raw.x, y: raw.y, r: 8, elev: 95 };
-    if (isStrip(d)) return { kind: 'segment', x1: raw.x, y1: clamp(raw.y - 30), x2: raw.x, y2: clamp(raw.y + 30), elev: 10 };
-    return { kind: 'point', x: raw.x, y: raw.y, elev: 0 };
-  }
-  return null;
-}
-
 const clamp = (v: number) => Math.round(Math.min(100, Math.max(0, v)));
 
 async function api(path: string, init?: RequestInit) {
@@ -141,7 +122,7 @@ function RoomMap({ room, projectCode, editMode, onSaved, onShapeSaved }: {
   useEffect(() => {
     setDevices(room.devices.map((d, i) => ({
       ...d,
-      position: upgradePos(d, d.position) ?? defaultPos(d, i, room.devices),
+      position: d.position ?? defaultPos(d, i, room.devices),
     })));
     setShape(room.shape);
     setDirty(false);
@@ -359,7 +340,7 @@ function Room3D({ room }: { room: Room }) {
             style={{ width: D, height: H, transform: `translate(-50%,-50%) rotateY(-90deg) translateZ(${-W / 2}px)` }} />
 
           {room.devices.map((d, i) => {
-            const p = upgradePos(d, d.position) ?? defaultPos(d, i, room.devices);
+            const p = d.position ?? defaultPos(d, i, room.devices);
             const elev = p.elev ?? 0;
 
             if (p.kind === 'circle') {

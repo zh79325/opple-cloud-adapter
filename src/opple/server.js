@@ -21,13 +21,11 @@ function savePositions(data) {
   writeFileSync(POS_FILE, JSON.stringify(data, null, 2));
 }
 
-/** 兼容读出房间数据：统一为 { shape, devices } 形态（兼容旧版直接存设备映射） */
+/** 读房间数据：{ shape, devices } */
 function readRoom(pos, projectCode, gpno) {
   const roomRaw = pos[projectCode]?.[String(gpno)];
   if (!roomRaw) return { shape: null, devices: {} };
-  if (roomRaw.devices) return { shape: roomRaw.shape ?? null, devices: roomRaw.devices };
-  // 旧格式：vDeviceId -> position 直接映射
-  return { shape: null, devices: roomRaw };
+  return { shape: roomRaw.shape ?? null, devices: roomRaw.devices ?? {} };
 }
 
 /** 写入房间数据（保持新格式） */
