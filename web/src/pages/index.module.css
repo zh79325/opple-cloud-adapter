@@ -55,17 +55,6 @@
   cursor: pointer;
 }
 
-.layout {
-  display: grid;
-  grid-template-columns: 1fr 380px;
-  gap: 20px;
-  align-items: start;
-}
-
-@media (max-width: 900px) {
-  .layout { grid-template-columns: 1fr; }
-}
-
 .rooms { display: flex; flex-direction: column; gap: 18px; }
 
 .room {
@@ -94,7 +83,7 @@
 
 .devices {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
   gap: 10px;
 }
 
@@ -103,22 +92,13 @@
   border-radius: 10px;
   background: #fafbfc;
   padding: 12px;
-  cursor: pointer;
-  text-align: left;
   display: flex;
   flex-direction: column;
   gap: 4px;
   font-size: 14px;
 }
 
-.device:hover { border-color: #94b8f8; }
-
-.deviceActive {
-  border-color: #3b82f6;
-  background: #eff6ff;
-}
-
-.deviceOffline { opacity: 0.5; }
+.deviceOffline { opacity: 0.55; }
 
 .dot { color: #22c55e; font-size: 12px; }
 .deviceOffline .dot { color: #9ca3af; }
@@ -128,118 +108,6 @@
 .deviceType {
   font-size: 12px;
   color: #8a919f;
-}
-
-.panel {
-  background: #fff;
-  border: 1px solid #eceef2;
-  border-radius: 14px;
-  padding: 18px;
-  position: sticky;
-  top: 20px;
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-}
-
-.panel h2 { font-size: 17px; margin: 0; }
-
-.panelId { font-size: 12px; color: #8a919f; font-weight: 400; margin-left: 6px; }
-
-.panelMeta { font-size: 12px; color: #6b7280; margin: -8px 0 0; }
-
-.ctrlRow { display: flex; gap: 10px; }
-
-.ctrlRow button {
-  flex: 1;
-  border: none;
-  border-radius: 10px;
-  padding: 10px;
-  font-size: 15px;
-  cursor: pointer;
-  color: #fff;
-}
-
-.btnPrimary { background: #3b82f6; }
-.btnDanger { background: #ef4444; }
-
-.ctrlBlock {
-  border-top: 1px solid #f0f1f3;
-  padding-top: 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.ctrlBlock label {
-  font-size: 13px;
-  color: #4b5563;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.ctrlBlock input[type='range'] { flex: 1; }
-
-.ctrlBlock button {
-  border: 1px solid #d0d5dd;
-  background: #fff;
-  border-radius: 8px;
-  padding: 6px 14px;
-  font-size: 13px;
-  cursor: pointer;
-  align-self: flex-end;
-}
-
-.ctrlBlock button:hover { border-color: #3b82f6; color: #1d4ed8; }
-
-.colorGrid { display: flex; flex-wrap: wrap; gap: 6px; }
-
-.colorBtn {
-  border: 1px solid #e3e6eb;
-  background: #fff;
-  border-radius: 8px;
-  padding: 5px 10px;
-  font-size: 12px;
-  cursor: pointer;
-}
-
-.colorBtn:hover { border-color: #94b8f8; background: #eff6ff; }
-
-.sceneGrid { display: flex; flex-wrap: wrap; gap: 6px; }
-
-.sceneBtn {
-  border: 1px solid #e3e6eb;
-  background: #fff;
-  border-radius: 8px;
-  padding: 6px 12px;
-  font-size: 13px;
-  cursor: pointer;
-}
-
-.sceneActive { border-color: #8b5cf6; background: #f5f3ff; color: #6d28d9; }
-
-.sceneOpts { display: flex; flex-direction: column; gap: 8px; }
-
-.sceneOpts label { font-size: 13px; color: #4b5563; display: flex; align-items: center; gap: 8px; }
-
-.sceneOpts select {
-  border: 1px solid #d0d5dd;
-  border-radius: 6px;
-  padding: 4px 8px;
-  font-size: 13px;
-}
-
-.sceneOpts input[type='range'] { flex: 1; }
-
-.sceneOpts .btnPrimary {
-  border: none;
-  color: #fff;
-  background: #8b5cf6;
-  border-radius: 8px;
-  padding: 8px;
-  font-size: 14px;
-  cursor: pointer;
 }
 
 .error {
@@ -252,19 +120,4 @@
   margin-bottom: 16px;
 }
 
-.toast {
-  position: fixed;
-  bottom: 28px;
-  left: 50%;
-  transform: translateX(-50%);
-  background: #111827;
-  color: #fff;
-  border-radius: 10px;
-  padding: 10px 20px;
-  font-size: 14px;
-  z-index: 99;
-}
-
 .empty { color: #8a919f; font-size: 14px; }
-
-button:disabled { opacity: 0.6; cursor: wait; }

@@ -28,14 +28,6 @@ function json(res, code, data) {
   res.end(body);
 }
 
-async function readBody(req) {
-  const chunks = [];
-  for await (const c of req) chunks.push(c);
-  if (!chunks.length) return {};
-  try { return JSON.parse(Buffer.concat(chunks).toString('utf8')); }
-  catch { return {}; }
-}
-
 const server = createServer(async (req, res) => {
   const url = new URL(req.url, `http://localhost:${PORT}`);
   const path = url.pathname;
@@ -70,61 +62,6 @@ const server = createServer(async (req, res) => {
         const vid = url.searchParams.get('vDeviceId');
         if (!vid) return json(res, 400, { error: 'vDeviceId required' });
         return json(res, 200, await client.actionAbility(vid));
-      }
-      if (req.method === 'POST' && path === '/api/light') {
-        const { vDeviceId, op, value } = await readBody(req);
-        const LIGHT = {
-          switch: '0x03110000', bright: '0x03130000', cct: '0x031B0000',
-        };
-        let values;
-        switch (op) {
-          case 'on': values = [1]; break;
-          case 'off': values = [0]; break;
-          case 'bright': {
-            let v = value;
-            if (String(v).endsWith('%')) v = Math.round(parseFloat(v) * 255 / 100);
-            values = [Number(v)];
-            break;
-          }
-          case 'cct': values = [Number(value)]; break;
-          case 'duv': values = [0, Number(value)]; break; // 回路0 + duv
-          case 'color': values = [0, Number(value)]; break; // 回路0 + CXCY
-          default: return json(res, 400, { error: `unknown op: ${op}` });
-        }
-        const msgType = op === 'duv' ? '0x14170000'
-          : op === 'color' ? '0x046B0000'
-          : LIGHT[op === 'on' || op === 'off' ? 'switch' : op];
-        await client.callAction(vDeviceId, msgType, values);
-        return json(res, 200, { ok: true });
-      }
-      if (req.method === 'POST' && path === '/api/scene') {
-        const { vDeviceId, effect, opts = {} } = await readBody(req);
-        const SCENES = {
-          流水: ['0x14030000', 0, ['color', 'speed', 'loop']],
-          跑马: ['0x14050000', 1, ['color', 'speed', 'direction']],
-          呼吸: ['0x14070000', 2, ['color', 'speed']],
-          律动: ['0x14090000', 3, ['color', 'speed']],
-          静态色温渐变: ['0x140B0000', 4, ['cctFrom', 'cctTo', 'direction']],
-          动态色温渐变: ['0x140D0000', 5, ['cctFrom', 'cctTo', 'duration']],
-          静态颜色渐变: ['0x140F0000', 6, ['color', 'direction']],
-        };
-        const sc = SCENES[effect];
-        if (!sc) return json(res, 400, { error: `unknown effect: ${effect}` });
-        const [msg, mode, fields] = sc;
-        const values = [0, mode]; // 回路, 模式
-        for (const f of fields) {
-          if (opts[f] === undefined) continue;
-          if (f === 'direction') values.push(opts[f] === 'reverse' ? 1 : 0);
-          else if (f === 'loop') values.push(Number(opts[f] === '1' ? 1 : opts[f] === '0' ? 0 : 1));
-          else values.push(Number(opts[f]));
-        }
-        await client.callAction(vDeviceId, msg, values);
-        return json(res, 200, { ok: true, values });
-      }
-      if (req.method === 'POST' && path === '/api/call') {
-        const { vDeviceId, msgType, values = [] } = await readBody(req);
-        await client.callAction(vDeviceId, msgType, values);
-        return json(res, 200, { ok: true });
       }
       return json(res, 404, { error: 'not found' });
     } catch (e) {
