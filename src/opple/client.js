@@ -39,24 +39,21 @@ export class OppleClient {
   }
 
   headers() {
+    // 与 App 实测请求头逐字段一致（小写形式；实测混合大小写头会触发 12004/11009 校验异常）
     return {
-      'Lang': 'zh-cn',
-      'Accept': 'application/json',
-      'Content-Type': 'application/json',
-      'App-TimeZone': 'Asia/Shanghai',
-      'App-TimeZone-Offset': '+480',
-      'App-Version': APP_VERSION,
-      'ClientId': CLIENT_ID,
-      'clientid': CLIENT_ID, // iOS 端小写形式，服务端不区分
-      'OSType': 'IOS',
-      'ProjectCode': this.projectCode,
-      'Projectcode': this.projectCode,
+      'lang': 'zh-cn',
+      'accept': 'application/json',
+      'content-type': 'application/json',
+      'app-timezone': 'Asia/Shanghai',
+      'app-timezone-offset': '+480',
+      'app-version': APP_VERSION,
+      'clientid': CLIENT_ID,
+      'ostype': 'IOS',
       'projectcode': this.projectCode,
-      'Token': this.token,
       'token': this.token,
       'tid': this.tid,
       'client-up-time': String(Date.now()),
-      'User-Agent': 'SmartHome/3 CFNetwork/3896.100.1.2.1 Darwin/27.0.0',
+      'user-agent': 'SmartHome/3 CFNetwork/3896.100.1.2.1 Darwin/27.0.0',
     };
   }
 
@@ -87,9 +84,11 @@ export class OppleClient {
     const text = await res.text();
     let json;
     try { json = JSON.parse(text); } catch { throw new Error(`响应非 JSON: ${text.slice(0, 200)}`); }
-    // 统一错误处理：StatusCode !== 0 视为失败
-    if (json.StatusCode !== undefined && json.StatusCode !== 0) {
-      throw new Error(`[${json.StatusCode}] ${json.Message ?? '未知错误'} (${path})`);
+    // 统一错误处理：StatusCode !== 0 视为失败（注意部分接口返回字符串 '0'）
+    const sc = json.StatusCode;
+    const scNum = typeof sc === 'string' ? Number(sc) : sc;
+    if (scNum !== undefined && scNum !== 0 && scNum !== null) {
+      throw new Error(`[${scNum}] ${json.Message ?? '未知错误'} (${path})`);
     }
     return json.Result ?? json;
   }
