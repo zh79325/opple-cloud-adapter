@@ -191,9 +191,16 @@ async function controlCmd(devId, action, opts, { fakeId = false } = {}) {
 // 加密 = encryptLanData：@124 起 XOR generatePasswordKey(macOrKey)[i%20]；广播=OPUniversalKey，单播=目标 MAC hex 派生
 // AppendData(52B, 13×LE U32)：[0x30000100, groupId, 1, 1, 0x4FFFF, 5, 1, 0, 1, 6, 亮度%, 7, 色温0-10000]
 function localLanIp() {
+  // 注意：VPN utun 接口可能是 192.168.x.x（如 192.168.255.254），必须排除——
+  // 2026-10-23 教训：公司网下 utun5 命中正则，包 SrcIP 全错且实验空打。
+  for (const [name, list] of Object.entries(networkInterfaces()))
+    for (const ni of list ?? [])
+      if (ni.family === 'IPv4' && !ni.internal && /^en\d/.test(name) && /^192\.168\.\d+\.\d+$/.test(ni.address) && !/\.255$/.test(ni.address))
+        return ni.address;
   for (const list of Object.values(networkInterfaces()))
     for (const ni of list ?? [])
-      if (ni.family === 'IPv4' && !ni.internal && /^192\.168\./.test(ni.address)) return ni.address;
+      if (ni.family === 'IPv4' && !ni.internal && /^192\.168\.\d+\.\d+$/.test(ni.address) && !/\.255$/.test(ni.address))
+        return ni.address;
   return '192.168.0.108';
 }
 
@@ -426,6 +433,49 @@ function buildAnnouncePacket({ macHex, srcIp, deviceIdNum, transNo }) {
   return Buffer.concat([head, ad]);                 // 数据区不加密
 }
 
+// ---- 决定性实验（2026-10-23 固件逆向：owpMsg 会话表机制验证）----
+// 固件 0x21a90 收包主函数逻辑：
+//   len ≤ 0x7B 直接返回；包字段 ntohl 后与 0xF0E0D0C0/0x12789AFE 双魔数比对（特权通道，
+//   App 不发）；常规包过「sockaddr vs ctx+0x5c 期望值」比对 → 会话表（0x10009190，
+//   10 条 ×12B 三元组）查找：命中 → 返回（放行）；未命中 → bl 0x218a0 登记（上限 8 条）
+//   后返回（当前包不执行）→「首见登记、复见放行」两段确认模型。
+//   MsgId=0x03970000 免表走独立响应路径。
+// exp2 实验流：0x0397 探针 ×2（验证包格式能否进处理函数）→ 同字节包 ×4
+//   （模型预测：第 2 发起执行）→ TransNo+1 对照 ×1（模型预测：永不执行）。
+async function expDupCmd(bright, cct, transNo, dstIp) {
+  const myIp = localLanIp();
+  const pktFixed = buildStatusPacket({ bright, cct, transNo, srcIp: myIp });
+  const pktNext = buildStatusPacket({ bright, cct, transNo: transNo + 1, srcIp: myIp });
+  const pkt0397 = buildStatusPacket({ bright, cct, transNo, msgType: 0x03970000, srcIp: myIp });
+  console.log(`实验 exp2：0x0397 探针 ×2 → 同字节 ×4（transNo=${transNo}，${pktFixed.length}B）→ 对照 ×1（transNo=${transNo + 1}）`);
+  console.log(`判据（人眼）：第 2-4 发之间灯是否切到 亮度${bright}%/色温${cct}K；对照发应无动作`);
+  const replies = await new Promise((resolve) => {
+    const sock = createSocket({ type: 'udp4', reuseAddr: true });
+    const rs = [];
+    sock.on('message', (buf, rinfo) => rs.push({ from: `${rinfo.address}:${rinfo.port}`, len: buf.length, hex: buf.toString('hex').slice(0, 120) }));
+    sock.bind({ address: '0.0.0.0', port: APP_LOCAL_PORT }, () => {
+      sock.setBroadcast(true);
+      const t0 = 100;
+      const fire = (pkt, tag) => {
+        sock.send(pkt, APP_LOCAL_PORT, '192.168.0.255');   // 子网广播 55001
+        sock.send(pkt, APP_LOCAL_PORT, BROADCAST_IP);      // 定向广播 55001
+        sock.send(pkt, 55002, '192.168.0.255');            // 子网广播 55002（客厅灯端口盲区补测：固件 owpNet port+1 机制，网关真实应答口即 55002）
+        sock.send(pkt, 55002, GATEWAY.ip);                 // ★ 单播网关 55002（灯 socket 实际绑定端口，固件 port+1 机制）
+        if (dstIp) sock.send(pkt, 55001, dstIp);           // ★ 单播目标灯（书房灯 0.140:55001 UDP 面活跃，会话表两段确认终局靶）
+        console.log(`  ↑ ${tag}${dstIp ? `（含单播 ${dstIp}:55001）` : ''}`);
+      };
+      setTimeout(() => fire(pkt0397, '0397 探针 1'), t0);
+      setTimeout(() => fire(pkt0397, '0397 探针 2'), t0 + 500);
+      for (let i = 0; i < 4; i++) setTimeout(() => fire(pktFixed, `同字节第 ${i + 1} 发`), t0 + 1500 + i * 400);
+      setTimeout(() => fire(pktNext, '对照发（TransNo+1）'), t0 + 1500 + 4 * 400 + 1500);
+      setTimeout(() => { try { sock.close(); } catch { /* noop */ } resolve(rs); }, t0 + 1500 + 4 * 400 + 5500);
+    });
+  });
+  console.log(`\n==== ${replies.length} 个回包 ====`);
+  for (const r of replies) console.log(`  ${r.from}  ${r.len}B  ${r.hex}`);
+  console.log('\n判据：灯是否在第 2-4 发间切到目标状态（回包仅辅助）');
+}
+
 async function announceCmd(bright, cct, startNo, bindIp) {
   // MAC 凭证 = HAR DeviceSummaryV2 里天境灯绑定记录的 Mac（=配网时手机 MAC）
   // 设备端校验宣告包 MAC 是否匹配绑定关系；IP 用本机（UDP 真实源一致）
@@ -522,7 +572,7 @@ function sendUnicast(pkt, gwIp, port = 55001, waitMs = 2000) {
 
 // 灯带跑马单控：AppendData = U8(回路0) U8(模式1) hex(红蓝双色CXCY) U8(速度) U8(方向)
 const STRIP_DEVICE_ID = 4212993;          // 2122018 电视机灯带真实 deviceId（HAR DeviceSummaryV2）
-const GATEWAY = { ip: '192.168.0.119', mac: '142B2FB08BC8', deviceId: 2626951 }; // 客厅网关（HAR DeviceSummaryV2 权威）
+const GATEWAY = { ip: '192.168.0.126', mac: '142B2FB08BC8', deviceId: 2626951 }; // 客厅网关（云端 BatchSearchFirmwareVersion 2026-10-23 实报 Ip=192.168.0.126；10-22 发现时为 119，DHCP 漂移——回家先 lan-sweep 复核）
 const UCLOUD_ID = 4202639;                // App 登录态 ucloundid（HAR）
 const STRIP_COLOR = '19000CE405DC0258';   // 红蓝双色 CXCY
 
@@ -600,6 +650,10 @@ switch (cmd) {
     if (r1.ok && r2.ok) console.log('两次均生效 → 设备端不校验 uCloudId，纯同网段信任（token/凭证完全不需要）');
     else if (r1.ok && !r2.ok) console.log('仅真实 uCloudId 生效 → 设备端校验绑定关系，但 uCloudId 一次抓包即可获得（静态值）');
     else console.log('真实 uCloudId 也无响应 → PDU 布局或加密推测需按 discover 回包校准');
+    break;
+  case 'exp2':
+    if (!a1 || !a2 || !a3) { console.error('用法: exp2 <亮度0-100> <色温0-10000> <SrcTransNo> [单播目标IP，如书房灯 192.168.0.140]'); process.exit(1); }
+    await expDupCmd(Number(a1), Number(a2), Number(a3), positionals[4]);
     break;
   case 'announce':
     if (!a1 || !a2 || !a3) { console.error('用法: announce <亮度> <色温> <SrcTransNo起值>'); process.exit(1); }
