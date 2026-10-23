@@ -10,7 +10,8 @@
     "opple": "node bin/opple.js",
     "dev": "cd web && npm start",
     "build": "cd web && npm run build",
-    "web": "node src/opple/server.js"
+    "web": "node src/opple/server.js",
+    "mcp": "node src/opple/mcp.js"
   },
   "engines": {
     "node": ">=22"

@@ -20,13 +20,13 @@ export default defineConfig(() => ({
       // 固定端口：显式指定后 ice 不再自动探测递增，被占用时直接报错，
       // 避免“3000 被占 → 悄悄跑到 3001”造成多个残留 dev server 的困惑
       port: 3000,
-      // ice 官方扩展点：把 /api/* 请求直接交给 opple 后端处理，插到链首优先于页面渲染
+      // ice 官方扩展点：把 /api/* 与 /mcp 请求直接交给 opple 后端处理，插到链首优先于页面渲染
       setupMiddlewares: (middlewares: any[]) => {
         let handlerPromise: Promise<any>;
         middlewares.unshift({
           name: 'opple-api',
           middleware: (req: any, res: any, next: () => void) => {
-            if (!req.url.startsWith('/api/')) return next();
+            if (!req.url.startsWith('/api/') && !req.url.startsWith('/mcp')) return next();
             handlerPromise ??= import(serverModuleUrl).then((m: any) => m.handleRequest);
             handlerPromise
               .then((handleRequest: (req: any, res: any) => Promise<void>) => handleRequest(req, res))

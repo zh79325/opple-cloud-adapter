@@ -198,7 +198,7 @@ export class OppleClient {
             deviceCount: room.DeviceCount,
             devices: devices.map(d => ({
               vDeviceId: d.VDeviceId,
-              name: d.DeviceName ?? d.ClassSkuName,
+              name: d.Name ?? d.DeviceName ?? d.ClassSkuName,
               type: d.ClassSkuName,
               protocol: d.ProtocolTypeList?.[0]?.Name ?? d.ProtocolTypeName,
               online: d.IsOnline,

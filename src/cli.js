@@ -42,7 +42,7 @@ function printTable(rows, headers) {
   for (const r of rows) console.log(line(r));
 }
 
-function getClient() {
+export function getClient() {
   if (process.env.OPPLE_TOKEN && process.env.OPPLE_PROJECTCODE) {
     return new OppleClient({ token: process.env.OPPLE_TOKEN, projectCode: process.env.OPPLE_PROJECTCODE });
   }
@@ -50,7 +50,7 @@ function getClient() {
 }
 
 // ---- 灯光控制预设（逆向自 FindDeviceAbility，msgType 命令字表） ----
-const LIGHT = {
+export const LIGHT = {
   switch: '0x03110000',   // 开关（0/1）
   bright: '0x03130000',   // 亮度（1-255）
   cct: '0x031B0000',      // 色温（1800-12000K）
@@ -59,14 +59,14 @@ const LIGHT = {
 };
 
 // 官方预设颜色（CXCY 打包值，来源：FindDeviceAbility 枚举）
-const COLORS = {
+export const COLORS = {
   藤萝紫: 207948282, 山海青: 214175122, 竹影绿: 242749551, 胡杨黄: 301010749,
   桃林红: 299502821, 星云: 162793604, 梦幻: 136054106, 火烧云: 324275309,
   加州阳光: 288098833, 晚霞: 211158890,
 };
 
 // 日光模式预设（高16位=色温K，来源：FindDeviceAbility 0x046F 枚举）
-const DAYLIGHT = { 晨曦: 196672844, 旭日: 262209228, 沐阳: 327745279, 夕照: 177011814, 明月: 655424537, 静夜: 118029324 };
+export const DAYLIGHT = { 晨曦: 196672844, 旭日: 262209228, 沐阳: 327745279, 夕照: 177011814, 明月: 655424537, 静夜: 118029324 };
 
 // 悦动灯效（灯带类设备）。无参数时走 0x14010000 悦动总开关 [回路,模式]，沿用设备当前颜色/速度；
 // 带 colors/speed/direction 参数时走各效果专属命令字，values 顺序=能力表 KeyId 升序：
@@ -82,7 +82,7 @@ const DAYLIGHT = { 晨曦: 196672844, 旭日: 262209228, 沐阳: 327745279, 夕�
 // 跑马 0x1E0D-0F、呼吸 0x1E10-11、律动 0x1E12-13（颜色/速度[/循环/方向]）。
 // 渲染语义（速度均为「周期与档位线性」）：跑马=色块流动，T(s)=16.40-0.117s 秒/圈；
 // 律动=全带颜色交替闪烁，交替间隔 T(s)=5.24-0.051s 秒（100 档≈0.14s≈7Hz 频闪）。
-const SCENE = {
+export const SCENE = {
   流水: { mode: 0, full: '0x14030000', extra: ['loop', 'direction'], defSpeed: 35 },
   跑马: { mode: 1, full: '0x14050000', extra: ['direction'], defSpeed: 24 },
   呼吸: { mode: 2, full: '0x14070000', extra: [], defSpeed: 35 },
@@ -93,18 +93,18 @@ const SCENE = {
 
 // —— 客厅双带无缝同步（真机验证配方：参数镜像 + 方向互补 + 背靠背下发）——
 // 两带物理上共享两端点成环（2122018 起点=2122019 起点，终点亦同），方向互补使色块同绕向流动。
-const SYNC_STRIPS = [
+export const SYNC_STRIPS = [
   { id: '2122018', name: '电视机灯带', len: 9.69, dir: 0 },   // 长带（实测 401+333+235cm），正向
   { id: '2122019', name: '沙发后侧灯带', len: 7.15, dir: 1 }, // 短带（长度为估算值），反向
 ];
 // 跑马速度→物理流速（9.69m 带逐档标定定案）：
 // 周期 T(s)=16.40−0.117×s 秒/圈（s≥20 严格线性；1~20 clamp 平台 T≈14.06s → 流速 0.69m/s 封顶）
-const MARQUEE_PERIOD = s => (s <= 20 ? 14.06 : 16.40 - 0.117 * s);
+export const MARQUEE_PERIOD = s => (s <= 20 ? 14.06 : 16.40 - 0.117 * s);
 // 物理流速 v(m/s) → 反推速度档（曲线仅在 20~100 段单调，两端 clamp）
 const speedForV = v => Math.min(100, Math.max(20, Math.round((16.40 - SYNC_STRIPS[0].len / v) / 0.117)));
 
 // 组装一条灯效完整参数命令（颜色 hex 补零满 6 组/48 字符防吞参；values 个数=能力表 KeyId 数）
-function buildEffectCmd(effectName, opt) {
+export function buildEffectCmd(effectName, opt) {
   const sc = SCENE[effectName];
   if (!sc?.full) throw new Error(`效果 ${effectName} 不支持完整参数下发`);
   const parts = String(opt.colors ?? '').split(',').filter(Boolean)
@@ -119,11 +119,11 @@ function buildEffectCmd(effectName, opt) {
 }
 
 /** xy 色坐标（0-1）→ CXCY 打包值（高16位 cx*10000，低16位 cy*10000） */
-function packCXCY(cx, cy) {
+export function packCXCY(cx, cy) {
   return ((Math.round(cx * 10000) & 0xFFFF) << 16) | (Math.round(cy * 10000) & 0xFFFF);
 }
 
-function resolveColor(input) {
+export function resolveColor(input) {
   if (COLORS[input] !== undefined) return COLORS[input];
   if (/^-?\d+$/.test(input)) return Number(input);
   const m = input.match(/^#([0-9a-fA-F]{6})$/);

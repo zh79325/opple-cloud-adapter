@@ -299,6 +299,89 @@ function RoomCard({ room, onOpen }: { room: Room; onOpen: () => void }) {
   );
 }
 
+// ---- AI 控灯 MCP 绑定：动态地址回读 + 一键复制话术 ----
+// 隧道域名每次重启服务都会变化（多次反复绑定场景）：面板实时拉取当前地址，
+// 话术由服务端生成注入最新 URL，重新复制发给 AI 即完成重新绑定，AI 侧零配置。
+interface McpInfo {
+  tunnelUrl: string | null;
+  tunnelStarting: boolean;
+  tunnelError: string | null;
+  publicMcpUrl: string | null;
+  lanMcpUrl: string;
+  script: string;
+}
+
+function McpBindCard() {
+  const [info, setInfo] = useState<McpInfo | null>(null);
+  const [copied, setCopied] = useState<string | null>(null);
+
+  const load = useCallback(() => {
+    api('/mcp-info').then(setInfo).catch(() => setInfo(null));
+  }, []);
+  useEffect(() => { load(); }, [load]);
+  // 隧道后台拉起需要数秒：starting 期间自动轮询，避免用户手动刷
+  useEffect(() => {
+    if (!info?.tunnelStarting) return undefined;
+    const t = setTimeout(load, 3000);
+    return () => clearTimeout(t);
+  }, [info?.tunnelStarting, load]);
+
+  const copy = useCallback(async (text: string, tag: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(tag);
+      setTimeout(() => setCopied((c) => (c === tag ? null : c)), 2000);
+    } catch { /* 剪贴板不可用时用户可手动选中话术区复制 */ }
+  }, []);
+
+  if (!info) return null;
+  const live = Boolean(info.publicMcpUrl);
+
+  return (
+    <section className={styles.mcpCard}>
+      <div className={styles.sectionHead}>
+        <h2>AI 控灯绑定</h2>
+        <button type="button" className={styles.mcpRefresh} onClick={load}>刷新地址</button>
+      </div>
+      <div className={styles.mcpStatus}>
+        <span className={`${styles.mcpDot} ${live ? styles.mcpDotLive : styles.mcpDotIdle}`} />
+        {live
+          ? '公网隧道在线 — 手机上的 AI（千问/豆包）可远程接入'
+          : info.tunnelStarting
+            ? '公网隧道连接中…（自动轮询，就绪后此行变绿）'
+            : `公网隧道未建立${info.tunnelError ? `：${info.tunnelError}` : ''}，当前仅限手机与 Mac 同 Wi-Fi 时接入`}
+      </div>
+      <div className={styles.mcpUrlRow}>
+        <span className={styles.mcpUrlLabel}>公网</span>
+        <code className={styles.mcpUrl}>{info.publicMcpUrl ?? '（隧道未连接）'}</code>
+        {info.publicMcpUrl && (
+          <button type="button" className={styles.mcpBtn} onClick={() => copy(info.publicMcpUrl as string, 'url')}>
+            {copied === 'url' ? '已复制' : '复制 URL'}
+          </button>
+        )}
+      </div>
+      <div className={styles.mcpUrlRow}>
+        <span className={styles.mcpUrlLabel}>局域网</span>
+        <code className={styles.mcpUrl}>{info.lanMcpUrl}</code>
+      </div>
+      <pre className={styles.mcpScript}>{info.script}</pre>
+      <div className={styles.mcpActions}>
+        <button
+          type="button"
+          className={styles.mcpBtnPrimary}
+          onClick={() => copy(info.script, 'script')}
+        >
+          {copied === 'script' ? '✓ 已复制，去粘贴给 AI' : '复制完整绑定话术'}
+        </button>
+      </div>
+      <p className={styles.mcpHint}>
+        服务每次重启后隧道地址会变化 — 重新点「复制完整绑定话术」发给 AI 即完成重新绑定。
+        话术内含协议说明与全部工具清单，AI 侧无需任何配置界面。
+      </p>
+    </section>
+  );
+}
+
 // ---- 家庭页：统计 + 房间列表 ----
 function HomeView({ home, onOpenRoom }: { home: Home | undefined; onOpenRoom: (gpno: number) => void }) {
   if (!home) return <div className={styles.empty}>未找到家庭数据</div>;
@@ -320,6 +403,8 @@ function HomeView({ home, onOpenRoom }: { home: Home | undefined; onOpenRoom: (g
           <span className={styles.statLabel}>在线</span>
         </div>
       </section>
+
+      <McpBindCard />
 
       <section>
         <div className={styles.sectionHead}>
